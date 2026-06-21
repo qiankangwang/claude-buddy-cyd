@@ -50,6 +50,7 @@ static void handleEvent() {
     s.promptId = (const char *)(p["id"] | "");
     s.tool = (const char *)(p["tool"] | "");
     s.hint = (const char *)(p["hint"] | "");
+    s.promptMs = millis();
     s.decision = 0; // fresh prompt awaits a decision
   }
   s.dirty = true;
@@ -83,6 +84,7 @@ void Server::begin(std::function<void(const String &)> onPortal) {
   bool ok = wm.autoConnect("Claude-CYD-Setup");
   g_state.wifiUp = ok;
   if (ok) {
+    WiFi.setAutoReconnect(true);
     g_state.ip = WiFi.localIP().toString();
     if (MDNS.begin("claude-cyd"))
       MDNS.addService("http", "tcp", 80);
