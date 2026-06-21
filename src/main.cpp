@@ -12,16 +12,18 @@ static hal::Storage storage;
 static hal::Touch touch;
 static hal::Led led;
 
-static const int REG_Y = 34, REG_H = 176;
+static const int REG_Y = render::REG_Y, REG_H = render::REG_H; // single source
 
 // transient animation windows
 static uint32_t heartUntil = 0, dizzyUntil = 0, celebrateUntil = 0;
 // power / interaction
 static uint32_t lastInteraction = 0;
 static bool screenOn = true, forceRedraw = false, wasTouched = false, haveChar = false;
-// triple-tap detection
+// triple-tap detection (shift register of the last 3 tap times)
 static uint32_t tapTimes[3] = {0, 0, 0};
-static int tapIdx = 0;
+// stats are flushed lazily to NVS (avoid a flash commit on every tap)
+static bool statsDirty = false;
+static uint32_t lastStatsSave = 0;
 
 #define STATS_MAGIC 0x43425331UL
 #define SCREEN_OFF_MS 30000UL
@@ -236,7 +238,7 @@ void loop() {
       if (inRect(denyBtn, tx, ty)) {
         net::server.setDecision(2);
         g_stats.deny++;
-        saveStats();
+        statsDirty = true;
       } else if (inRect(approveBtn, tx, ty)) {
         net::server.setDecision(1);
         g_stats.appr++;
@@ -247,22 +249,25 @@ void loop() {
         } else if (dt < 5000) {
           heartUntil = now + 2200; // fast approval
         }
-        saveStats();
+        statsDirty = true;
       }
     } else {
       // triple-tap anywhere -> dizzy (replaces the official "shake")
-      tapTimes[tapIdx % 3] = now;
-      tapIdx++;
-      if (tapIdx >= 3) {
-        uint32_t a = tapTimes[0], b = tapTimes[1], c = tapTimes[2];
-        uint32_t lo = a < b ? (a < c ? a : c) : (b < c ? b : c);
-        uint32_t hi = a > b ? (a > c ? a : c) : (b > c ? b : c);
-        if (hi - lo < 900) {
-          dizzyUntil = now + 2200;
-          tapIdx = 0;
-        }
+      tapTimes[0] = tapTimes[1];
+      tapTimes[1] = tapTimes[2];
+      tapTimes[2] = now;
+      if (tapTimes[0] != 0 && tapTimes[2] - tapTimes[0] < 900) {
+        dizzyUntil = now + 2200;
+        tapTimes[0] = tapTimes[1] = tapTimes[2] = 0;
       }
     }
+  }
+
+  // M1: drop a stale prompt the hook has abandoned (no tap within its window),
+  // so we don't keep showing a dead Approve/Deny or count a phantom approval.
+  if (s.hasPrompt && s.decision == 0 && now - s.promptMs > 310000UL) {
+    s.hasPrompt = false;
+    s.dirty = true;
   }
 
   const char *st = stateName(now);
@@ -271,6 +276,10 @@ void loop() {
   bool calm = !s.hasPrompt && s.running == 0 && now >= celebrateUntil &&
               now >= heartUntil && now >= dizzyUntil;
   if (screenOn && calm && now - lastInteraction > SCREEN_OFF_MS) {
+    if (statsDirty) {
+      saveStats();
+      statsDirty = false;
+    }
     screenOn = false;
     display.backlight(false);
     led.off();
@@ -297,6 +306,11 @@ void loop() {
   if (now - ledT > 100) {
     ledT = now;
     driveLed(st, now);
+  }
+  if (statsDirty && now - lastStatsSave > 5000) {
+    saveStats();
+    statsDirty = false;
+    lastStatsSave = now;
   }
   delay(2);
 }

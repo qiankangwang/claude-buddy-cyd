@@ -56,6 +56,11 @@ bool Touch::read(int16_t &x, int16_t &y) {
     y = ry;
     return true;
   }
+  if (cal_.xHi == cal_.xLo || cal_.yHi == cal_.yLo) {
+    x = rx; // degenerate calibration -> avoid divide-by-zero
+    y = ry;
+    return true;
+  }
   int rawX = cal_.xUsesRawX ? rx : ry;
   int rawY = cal_.yUsesRawX ? rx : ry;
   long span = (long)(w_ - 1 - 2 * CAL_MARGIN);
@@ -125,6 +130,12 @@ void Touch::calibrate(Display &disp) {
   cal_.xHi = cal_.xUsesRawX ? raw[1][0] : raw[1][1];
   cal_.yLo = cal_.yUsesRawX ? raw[0][0] : raw[0][1];
   cal_.yHi = cal_.yUsesRawX ? raw[2][0] : raw[2][1];
+  // Reject a degenerate calibration (e.g. all three targets tapped at the same
+  // spot) so we don't persist a divide-by-zero map; just recalibrate next boot.
+  if (abs(cal_.xHi - cal_.xLo) < 200 || abs(cal_.yHi - cal_.yLo) < 200) {
+    calibrated_ = false;
+    return;
+  }
   cal_.magic = CAL_MAGIC;
   store_->putBytes("touchcal", &cal_, sizeof(cal_));
   calibrated_ = true;

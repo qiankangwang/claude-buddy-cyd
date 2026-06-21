@@ -30,9 +30,8 @@ static void handleEvent() {
     http.send(405, "text/plain", "POST only");
     return;
   }
-  String body = http.arg("plain");
   JsonDocument doc;
-  if (deserializeJson(doc, body)) {
+  if (deserializeJson(doc, http.arg("plain"))) {
     http.send(400, "application/json", "{\"ok\":false,\"error\":\"bad json\"}");
     return;
   }

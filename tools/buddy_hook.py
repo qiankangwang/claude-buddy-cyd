@@ -74,22 +74,27 @@ def main():
                 "prompt": {"id": str(int(time.time() * 1000)),
                            "tool": tool, "hint": hint[:120]},
             })
-            deadline = time.time() + POLL_TIMEOUT
-            dec = "pending"
-            while time.time() < deadline:
-                dec = _get_decision(ip, tok)
-                if dec in ("allow", "deny"):
-                    break
-                time.sleep(0.4)
         except Exception:
-            return 0  # device unreachable -> defer to normal permission flow
+            return 0  # can't even reach the device -> defer to normal flow
+        # Poll for the tap. A transient error on a single poll must NOT discard a
+        # decision the user already made — keep polling until the window closes.
+        deadline = time.time() + POLL_TIMEOUT
+        dec = "pending"
+        while time.time() < deadline:
+            try:
+                dec = _get_decision(ip, tok)
+            except Exception:
+                dec = "pending"
+            if dec in ("allow", "deny"):
+                break
+            time.sleep(0.4)
         if dec in ("allow", "deny"):
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": dec,
                 "permissionDecisionReason": "Decided on CYD buddy",
             }}))
-        return 0
+        return 0  # no tap in time -> defer to Claude's normal permission flow
 
     # Non-blocking status events.
     msg = {
