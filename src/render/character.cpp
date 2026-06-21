@@ -23,8 +23,11 @@ static String g_cur;
 static int g_idx = 0;
 static bool g_open = false;
 
-// per-open draw geometry (set after the canvas size is known)
-static int g_scale = 1, g_offX = 0, g_offY = 0;
+// per-open draw geometry (set after the canvas size is known).
+// g_div = integer downsample factor (>=1); we never upscale so a small GIF
+// stays its native size and a large one is shrunk to fit the box below.
+static const int BOX_W = 224, BOX_H = 168;
+static int g_div = 1, g_offX = 0, g_offY = 0;
 static int g_frameDelay = 0;
 static uint32_t g_nextFrame = 0;
 
@@ -56,26 +59,24 @@ static int32_t gifSeek(GIFFILE *pf, int32_t pos) {
 // ---- AnimatedGIF draw callback: one scanline, integer-scaled, centered ----
 static void gifDraw(GIFDRAW *pDraw) {
   static uint16_t line[REG_W];
-  int w = pDraw->iWidth;
-  if (w > REG_W)
-    w = REG_W;
+  int K = g_div;
+  int srcY = pDraw->iY + pDraw->y;
+  if (K > 1 && (srcY % K))
+    return; // keep only lines on the downsample grid
   uint16_t *pal = pDraw->pPalette;
   uint8_t *s = pDraw->pPixels;
   uint8_t tr = pDraw->ucTransparent;
   bool hasT = pDraw->ucHasTransparency;
-  int scale = g_scale;
+  int iw = pDraw->iWidth;
 
   int n = 0;
-  for (int x = 0; x < w; x++) {
+  for (int x = 0; x < iw && n < REG_W; x += K) {
     uint8_t c = s[x];
-    uint16_t col = (hasT && c == tr) ? 0x0000 : pal[c];
-    for (int k = 0; k < scale && n < REG_W; k++)
-      line[n++] = col;
+    line[n++] = (hasT && c == tr) ? 0x0000 : pal[c];
   }
-  int dx = g_offX + pDraw->iX * scale;
-  int dy = g_offY + (pDraw->iY + pDraw->y) * scale;
-  for (int sy = 0; sy < scale; sy++)
-    g_tft->pushImage(dx, dy + sy, n, 1, line);
+  int dx = g_offX + pDraw->iX / K;
+  int dy = g_offY + srcY / K;
+  g_tft->pushImage(dx, dy, n, 1, line);
 }
 
 void Character::clearArea() {
@@ -93,13 +94,15 @@ bool Character::openCurrent() {
   g_open = gif.open(path.c_str(), gifOpen, gifClose, gifRead, gifSeek, gifDraw);
   if (g_open) {
     int cw = gif.getCanvasWidth(), ch = gif.getCanvasHeight();
-    if (cw <= 0) cw = 96;
-    if (ch <= 0) ch = 96;
-    int sx = REG_W / cw, sy = REG_H / ch;
-    g_scale = sx < sy ? sx : sy;
-    if (g_scale < 1) g_scale = 1;
-    g_offX = REG_X + (REG_W - cw * g_scale) / 2;
-    g_offY = REG_Y + (REG_H - ch * g_scale) / 2;
+    if (cw <= 0) cw = 120;
+    if (ch <= 0) ch = 120;
+    int K = 1;
+    while (cw / K > BOX_W || ch / K > BOX_H)
+      K++;
+    g_div = K;
+    int outW = cw / K, outH = ch / K;
+    g_offX = REG_X + (REG_W - outW) / 2;
+    g_offY = REG_Y + (REG_H - outH) / 2;
     g_nextFrame = 0;
   }
   return g_open;

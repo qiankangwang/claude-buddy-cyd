@@ -12,11 +12,32 @@ static hal::Storage storage;
 static hal::Touch touch;
 static hal::Led led;
 
-static uint32_t doneUntil = 0; // show celebratory "heart" until this millis
-static bool haveChar = false;
-
-// Character region (must match render/character.cpp).
 static const int REG_Y = 34, REG_H = 176;
+
+// transient animation windows
+static uint32_t heartUntil = 0, dizzyUntil = 0, celebrateUntil = 0;
+// power / interaction
+static uint32_t lastInteraction = 0;
+static bool screenOn = true, forceRedraw = false, wasTouched = false, haveChar = false;
+// triple-tap detection
+static uint32_t tapTimes[3] = {0, 0, 0};
+static int tapIdx = 0;
+
+#define STATS_MAGIC 0x43425331UL
+#define SCREEN_OFF_MS 30000UL
+#define LEVEL_EVERY 10UL // approvals per level-up (token counts aren't available via hooks)
+
+struct Stats {
+  uint32_t magic, appr, deny, level;
+};
+static Stats g_stats = {STATS_MAGIC, 0, 0, 0};
+
+static void loadStats() {
+  Stats s;
+  if (storage.getBytes("stats", &s, sizeof(s)) && s.magic == STATS_MAGIC)
+    g_stats = s;
+}
+static void saveStats() { storage.putBytes("stats", &g_stats, sizeof(g_stats)); }
 
 struct Rect {
   int x, y, w, h;
@@ -56,10 +77,14 @@ static String loadOrCreateToken() {
   return String(out);
 }
 
-static const char *stateName() {
+static const char *stateName(uint32_t now) {
   net::AppState &s = net::server.state();
-  if (millis() < doneUntil)
+  if (now < celebrateUntil)
+    return "celebrate";
+  if (now < heartUntil)
     return "heart";
+  if (now < dizzyUntil)
+    return "dizzy";
   if (!s.wifiUp)
     return "sleep";
   if (s.hasPrompt)
@@ -73,18 +98,21 @@ static const char *stateName() {
 
 static void driveLed(const char *st, uint32_t now) {
   bool blink = (now % 600) < 300;
+  bool fast = (now % 300) < 150;
   if (!strcmp(st, "attention"))
-    led.set(blink, false, false); // blinking red
-  else if (!strcmp(st, "busy"))
-    led.set(false, false, true); // blue
+    led.set(blink, false, false);
+  else if (!strcmp(st, "celebrate"))
+    led.set(fast, !fast, true); // party
   else if (!strcmp(st, "heart"))
-    led.set(false, true, false); // green
+    led.set(false, true, false);
+  else if (!strcmp(st, "dizzy"))
+    led.set(true, false, true); // magenta
+  else if (!strcmp(st, "busy"))
+    led.set(false, false, true);
   else
     led.off();
 }
 
-// Repaint only the top bar and the bottom UI; the character region (REG_Y..) is
-// owned by the GIF renderer and left untouched.
 static void renderStatic() {
   TFT_eSPI &t = display.tft();
   net::AppState &s = net::server.state();
@@ -98,7 +126,7 @@ static void renderStatic() {
   t.drawString(s.wifiUp ? ("IP " + s.ip).c_str() : "WiFi setup needed", W / 2,
                20, 1);
 
-  int top = REG_Y + REG_H; // bottom area starts here (210)
+  int top = REG_Y + REG_H;
   t.fillRect(0, top, W, H - top, TFT_BLACK);
   if (s.hasPrompt) {
     t.setTextDatum(TC_DATUM);
@@ -118,28 +146,30 @@ static void renderStatic() {
         s.running > 0 ? "working..." : (s.total > 0 ? "idle" : "sleeping");
     t.setTextDatum(TC_DATUM);
     t.setTextColor(TFT_WHITE, TFT_BLACK);
-    t.drawString(lbl, W / 2, top + 6, 4);
+    t.drawString(lbl, W / 2, top + 4, 4);
     if (s.msg.length()) {
       t.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-      t.drawString(s.msg.c_str(), W / 2, top + 38, 2);
+      t.drawString(s.msg.c_str(), W / 2, top + 34, 2);
     }
-    if (s.tokens > 0) {
-      t.setTextColor(TFT_DARKGREY, TFT_BLACK);
-      t.drawString(("tokens: " + String(s.tokens)).c_str(), W / 2, top + 64, 1);
-    }
+    char line[40];
+    snprintf(line, sizeof(line), "Lv %u   OK %u / NO %u", g_stats.level,
+             g_stats.appr, g_stats.deny);
+    t.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    t.drawString(line, W / 2, top + 62, 1);
   }
 }
 
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("\n[CYD Buddy] WiFi + official GIF character");
+  Serial.println("\n[CYD Buddy] WiFi + official Clawd character");
 
   display.begin();
   storage.begin();
   touch.begin(display, storage);
   led.begin();
   computeButtons();
+  loadStats();
 
   net::server.setToken(loadOrCreateToken());
 
@@ -170,29 +200,91 @@ void setup() {
   display.tft().fillScreen(TFT_BLACK);
   renderStatic();
   if (haveChar)
-    render::character.setState(stateName());
+    render::character.setState(stateName(millis()));
+  lastInteraction = millis();
 }
 
 void loop() {
+  uint32_t now = millis();
   net::server.loop();
-
   net::AppState &s = net::server.state();
-  if (s.hasPrompt && s.decision == 0) {
-    int16_t x, y;
-    if (touch.read(x, y)) {
-      if (inRect(denyBtn, x, y))
+
+  int16_t tx, ty;
+  bool t = touch.read(tx, ty);
+
+  // ---- asleep: any touch or a new prompt wakes us; else stay dark ----
+  if (!screenOn) {
+    if (touch.rawPressed() || s.hasPrompt) {
+      screenOn = true;
+      display.backlight(true);
+      lastInteraction = now;
+      forceRedraw = true;
+      wasTouched = true; // consume this contact, don't fire a tap
+    } else {
+      wasTouched = false;
+      delay(10);
+      return;
+    }
+  }
+
+  // ---- edge-detected tap while awake ----
+  bool tap = t && !wasTouched;
+  wasTouched = t;
+  if (tap) {
+    lastInteraction = now;
+    if (s.hasPrompt && s.decision == 0) {
+      if (inRect(denyBtn, tx, ty)) {
         net::server.setDecision(2);
-      else if (inRect(approveBtn, x, y)) {
+        g_stats.deny++;
+        saveStats();
+      } else if (inRect(approveBtn, tx, ty)) {
         net::server.setDecision(1);
-        doneUntil = millis() + 2000;
+        g_stats.appr++;
+        uint32_t dt = now - s.promptMs;
+        if (g_stats.appr % LEVEL_EVERY == 0) {
+          g_stats.level++;
+          celebrateUntil = now + 3500; // level up!
+        } else if (dt < 5000) {
+          heartUntil = now + 2200; // fast approval
+        }
+        saveStats();
+      }
+    } else {
+      // triple-tap anywhere -> dizzy (replaces the official "shake")
+      tapTimes[tapIdx % 3] = now;
+      tapIdx++;
+      if (tapIdx >= 3) {
+        uint32_t a = tapTimes[0], b = tapTimes[1], c = tapTimes[2];
+        uint32_t lo = a < b ? (a < c ? a : c) : (b < c ? b : c);
+        uint32_t hi = a > b ? (a > c ? a : c) : (b > c ? b : c);
+        if (hi - lo < 900) {
+          dizzyUntil = now + 2200;
+          tapIdx = 0;
+        }
       }
     }
   }
 
-  const char *st = stateName();
+  const char *st = stateName(now);
+
+  // ---- auto screen-off when calm ----
+  bool calm = !s.hasPrompt && s.running == 0 && now >= celebrateUntil &&
+              now >= heartUntil && now >= dizzyUntil;
+  if (screenOn && calm && now - lastInteraction > SCREEN_OFF_MS) {
+    screenOn = false;
+    display.backlight(false);
+    led.off();
+  }
+  if (!screenOn) {
+    delay(8);
+    return;
+  }
+
+  // ---- render ----
   static String last = "?";
-  if (s.dirty || last != st) {
+  if (s.dirty || forceRedraw || last != st) {
     s.dirty = false;
+    forceRedraw = false;
     last = st;
     renderStatic();
     if (haveChar)
@@ -202,7 +294,6 @@ void loop() {
     render::character.update();
 
   static uint32_t ledT = 0;
-  uint32_t now = millis();
   if (now - ledT > 100) {
     ledT = now;
     driveLed(st, now);

@@ -17,7 +17,8 @@ struct AppState {
   // pending permission prompt
   bool hasPrompt = false;
   String promptId, tool, hint;
-  int decision = 0; // 0 none, 1 allow, 2 deny
+  uint32_t promptMs = 0; // when the prompt arrived (for <5s "heart")
+  int decision = 0;      // 0 none, 1 allow, 2 deny
   bool dirty = true; // renderer should repaint
 };
 
