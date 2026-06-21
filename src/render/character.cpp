@@ -10,9 +10,7 @@ namespace render {
 
 Character character;
 
-// Character region (between the top status line and the bottom UI).
-static const int REG_X = 0, REG_Y = 34, REG_W = 240, REG_H = 176;
-
+// Character region constants come from character.h (render::REG_*).
 static TFT_eSPI *g_tft = nullptr;
 static AnimatedGIF gif;
 static fs::File g_file; // single open GIF file for the read/seek callbacks
@@ -46,6 +44,8 @@ static void gifClose(void *h) {
 static int32_t gifRead(GIFFILE *pf, uint8_t *buf, int32_t len) {
   fs::File *f = (fs::File *)pf->fHandle;
   int32_t n = f->read(buf, len);
+  if (n < 0)
+    n = 0; // LittleFS hiccup -> report 0 read, don't feed -1 to the decoder
   pf->iPos = f->position();
   return n;
 }
@@ -56,13 +56,18 @@ static int32_t gifSeek(GIFFILE *pf, int32_t pos) {
   return pos;
 }
 
-// ---- AnimatedGIF draw callback: one scanline, integer-scaled, centered ----
+// ---- AnimatedGIF draw callback: one scanline, integer-downsampled, centered ----
+// Assumes the pack's GIFs are full-frame (or transparent-over-black): transparent
+// pixels are painted black, which is correct only on the black background. Packs
+// exported with frame-diffing/partial frames may tear — keep packs full-frame.
 static void gifDraw(GIFDRAW *pDraw) {
   static uint16_t line[REG_W];
   int K = g_div;
   int srcY = pDraw->iY + pDraw->y;
   if (K > 1 && (srcY % K))
     return; // keep only lines on the downsample grid
+  if (pDraw->iX < 0 || pDraw->iX / K >= REG_W)
+    return; // off-region guard
   uint16_t *pal = pDraw->pPalette;
   uint8_t *s = pDraw->pPixels;
   uint8_t tr = pDraw->ucTransparent;
