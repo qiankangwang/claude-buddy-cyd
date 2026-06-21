@@ -5,6 +5,33 @@
 - **Status:** Approved — audit verdict **GO**, no hard blockers (2-agent external audit + upstream ground-truth from local clone)
 - **Upstream reference:** `anthropics/claude-desktop-buddy` cloned read-only at `../claude-desktop-buddy-ref`
 
+## REVISION — as shipped (supersedes the BLE design below)
+
+The original design targeted the official **Hardware Buddy BLE** transport. That
+feature turned out **not to be present in the user's Claude desktop app**
+(documented only in the maker repo + press; absent from product docs/menus), so
+the project pivoted while keeping the same device/UX goals:
+
+- **Transport:** self-hosted **WiFi + Claude Code hooks** instead of BLE. Device
+  runs WiFiManager captive-portal + a WebServer (`POST /event`, `GET /decision`,
+  `X-Buddy-Token` auth). `tools/buddy_hook.py` (invoked by Claude Code hooks)
+  POSTs prompts and polls the decision; `PreToolUse` returns the
+  `permissionDecision`. `src/ble/` is shelved (excluded from the build).
+- **Display driver:** **ILI9341** (confirmed on hardware), not ST7789 — the
+  dual-USB→ST7789 heuristic did not hold for this unit.
+- **Character:** official **Clawd** GIF pack (orange `#D97757` crab) rendered via
+  AnimatedGIF from LittleFS — not the `bufo` example.
+- **Behaviours:** 7 official states (heart only on <5s approve; celebrate on a
+  local level-up every 10 approvals since token counts aren't available via
+  hooks; dizzy on triple-tap replacing the IMU shake); 30s auto screen-off.
+- **Build:** large pio packages were fetched out-of-band (parallel + resumable)
+  and fed locally via `platform_packages = …@file://…` (slow CN proxy worked
+  around). See the dev memory note.
+
+The sections below are the original (BLE) design, kept for history.
+
+---
+
 ## 1. Goal & scope
 Full-parity rewrite of the Claude Desktop Buddy firmware for the CYD. Upstream is used as **protocol/asset reference only** (REFERENCE.md states no repo code is needed). Everything (UI / render / input / state / BLE) is written fresh for CYD; the only reused source is the 18 ASCII pet drawing functions (see §6).
 
