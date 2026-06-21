@@ -12,7 +12,7 @@ Full-parity rewrite of the Claude Desktop Buddy firmware for the CYD. Upstream i
 
 ## 2. Hardware (this exact board)
 - MCU: ESP32-WROOM-32, 4 MB flash, **NO PSRAM**, ~520 KB SRAM.
-- **Display: ST7789, 240×320, on HSPI** — MOSI13 / SCLK14 / MISO12 / CS15 / DC2 / RST-1 / BL21; `TFT_RGB_ORDER=TFT_BGR`, `TFT_INVERSION_OFF`, SPI 55 MHz (drop to 40 MHz if unstable). Driver is a **build-time flag**; fallback `ILI9341_2_DRIVER` if image is garbled (symptom-based tuning: garbled→wrong driver, negative→toggle inversion, R/B swap→toggle RGB order).
+- **Display: ILI9341 (`ILI9341_2_DRIVER`), 240×320, on HSPI** — MOSI13 / SCLK14 / MISO12 / CS15 / DC2 / RST-1 / BL21; SPI 55 MHz (drop to 40 MHz if unstable). **CONFIRMED ON HARDWARE (M1):** this dual-USB unit is ILI9341, NOT ST7789 — the dual-USB→ST7789 heuristic did not hold (ST7789 gave a pure-white screen; ILI9341 with default RGB order / no inversion renders correctly). No `TFT_RGB_ORDER`/`TFT_INVERSION` override needed.
 - **Touch: XPT2046 on VSPI (separate bus)** — CLK25 / CS33 / MOSI32 / MISO39 / IRQ36. Resistive → **calibration required, persisted to NVS**. Lib: `XPT2046_Touchscreen` (Paul Stoffregen) on its own `SPIClass`.
 - **RGB LED:** R4 / G16 / B17, **active-LOW**.
 - LDR light sensor: GPIO34 (ADC1). microSD (VSPI): CS5 / SCK18 / MISO19 / MOSI23. Speaker: GPIO26. USB-serial: CH340 → **COM5**.
