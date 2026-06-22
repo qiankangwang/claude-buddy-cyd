@@ -188,6 +188,29 @@ static void statCol(int cx, int y, const char *label, const char *value,
   gtext(value, cx, y + 15, &FreeSansBold9pt7b, vcol, C_CARD, TC_DATUM);
 }
 
+// Card headline text: while busy, the device-rotated whimsy verb (synced to the
+// animation); otherwise the hook activity msg, else project, else name.
+static const char *headlineText(const char *st) {
+  net::AppState &s = net::server.state();
+  if (!strcmp(st, "busy"))
+    return WHIMSY[verbIdx];
+  if (s.msg.length())
+    return s.msg.c_str();
+  if (s.project.length())
+    return s.project.c_str();
+  return "Claude Buddy";
+}
+
+// Repaint ONLY the headline band inside the card (so rotating the busy verb
+// doesn't flicker the stats grid, which refreshes on its own data changes).
+static void renderHeadline(const char *st) {
+  TFT_eSPI &t = display.tft();
+  int W = t.width(), cy = REG_Y + REG_H + 4;
+  t.fillRect(12, cy + 5, W - 24, 28, C_CARD); // clear the headline band only
+  gtextClamp(headlineText(st), W / 2, cy + 18, &FreeSansBold12pt7b, C_TEXT,
+             C_CARD, MC_DATUM, W - 32);
+}
+
 // Home screen: top status bar + (character region) + bottom stats card.
 static void renderStatic(const char *st) {
   TFT_eSPI &t = display.tft();
@@ -206,14 +229,9 @@ static void renderStatic(const char *st) {
   t.fillRect(0, REG_Y + REG_H, W, H - (REG_Y + REG_H), TFT_BLACK);
   t.fillRoundRect(8, cy, W - 16, chh, 12, C_CARD);
 
-  // headline: while busy show the device-rotated whimsy verb (synced to the
-  // animation loop); otherwise the hook's activity msg, else project, else name.
-  const char *head = !strcmp(st, "busy")  ? WHIMSY[verbIdx]
-                     : s.msg.length()      ? s.msg.c_str()
-                     : s.project.length()  ? s.project.c_str()
-                                           : "Claude Buddy";
-  gtextClamp(head, W / 2, cy + 18, &FreeSansBold12pt7b, C_TEXT, C_CARD, MC_DATUM,
-             W - 32);
+  // headline (verb when busy, else activity/project) -- shared with renderHeadline
+  gtextClamp(headlineText(st), W / 2, cy + 18, &FreeSansBold12pt7b, C_TEXT,
+             C_CARD, MC_DATUM, W - 32);
   t.drawFastHLine(20, cy + 40, W - 40, 0x2945); // divider (gap below the text)
 
   // 3x2 stacked grid: each value owns a ~80px column -> no ellipsis on numbers.
@@ -494,17 +512,7 @@ void loop() {
     return;
   }
 
-  // ---- rotate the busy verb in sync with the animation loop ----
-  if (!strcmp(st, "busy")) {
-    uint32_t lc = haveChar ? render::character.loops() : (now / 2500);
-    if (lc != lastLoops) {
-      lastLoops = lc;
-      verbIdx = (verbIdx + 1) % N_WHIMSY;
-      forceRedraw = true; // repaint the headline with the new verb
-    }
-  }
-
-  // ---- render ----
+  // ---- render full card on state/data change ----
   static String last = "?";
   if (s.dirty || forceRedraw || last != st) {
     s.dirty = false;
@@ -513,9 +521,22 @@ void loop() {
     renderStatic(st);
     if (haveChar)
       render::character.setState(st);
+    if (haveChar)
+      lastLoops = render::character.loops(); // sync so it ticks on next switch
   }
   if (haveChar)
     render::character.update();
+
+  // ---- rotate the busy verb when the clip switches (same logic as the
+  //      animation); repaint ONLY the headline so the stats grid never flickers
+  if (!strcmp(st, "busy")) {
+    uint32_t lc = haveChar ? render::character.loops() : (now / 2200);
+    if (lc != lastLoops) {
+      lastLoops = lc;
+      verbIdx = (verbIdx + 1) % N_WHIMSY;
+      renderHeadline(st);
+    }
+  }
 
   static uint32_t ledT = 0;
   if (now - ledT > 100) {
