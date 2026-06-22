@@ -1,24 +1,35 @@
 #!/usr/bin/env python3
 """Claude Code hook -> CYD buddy bridge.
 
-Reads the hook event JSON on stdin, talks to the CYD over the LAN (HTTP), and:
-  * PreToolUse: shows the tool + asks for approval ON THE DEVICE, blocks until
-    you tap Approve/Deny, then returns the permissionDecision to Claude Code.
-  * other events (SessionStart/Stop/Notification/UserPromptSubmit/...): pushes a
-    status snapshot so the buddy reflects what Claude is doing.
+Reads the hook event JSON on stdin and pushes a status + usage snapshot to the
+CYD over the LAN (HTTP). The device is a passive stats dashboard (the orange
+Clawd mascot reacts to what Claude is doing); there is no on-device approval, so
+every event is non-blocking and never affects Claude's own permission flow.
+
+Per event it sends: current activity, project name, and today's usage rollup
+(tokens, all-time tokens, tool calls, assistant turns, session count).
 
 Config: ~/.claude/buddy.json  ->  {"ip": "192.168.x.x", "token": "...."}
-Fail-open: any device/network error -> defer to Claude's normal flow (never
-blocks or breaks the session).
+Fail-open: any device/network error is swallowed (never blocks the session).
 """
 import json
 import os
+import random
 import sys
 import time
 import urllib.request
 
 CFG = os.path.join(os.path.expanduser("~"), ".claude", "buddy.json")
-POLL_TIMEOUT = 300  # seconds to wait for a tap before giving up
+TOK_STATE = os.path.join(os.path.expanduser("~"), ".claude", "buddy_tokens.json")
+
+# Whimsical "busy" verbs (Claude-Code-spinner style); one is picked per active
+# event so the buddy's activity line rotates as Claude works.
+WHIMSY = [
+    "Whirring", "Pondering", "Brewing", "Churning", "Noodling", "Cogitating",
+    "Conjuring", "Percolating", "Simmering", "Marinating", "Mulling", "Vibing",
+    "Ruminating", "Crunching", "Synthesizing", "Stewing", "Spinning", "Honking",
+    "Forging", "Hatching", "Musing", "Computing", "Cooking", "Tinkering",
+]
 
 # Bypass any system/env HTTP proxy — the buddy is on the LAN.
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -40,18 +51,89 @@ def _post_event(ip, tok, payload):
     _opener.open(req, timeout=5).read()
 
 
-def _get_decision(ip, tok):
-    req = urllib.request.Request(
-        "http://%s/decision" % ip, headers={"X-Buddy-Token": tok}
-    )
-    return json.loads(_opener.open(req, timeout=5).read().decode("utf-8"))["decision"]
+def _project(data):
+    cwd = data.get("cwd") or os.getcwd()
+    return os.path.basename(os.path.normpath(cwd))[:24]
 
 
-def _hint(tool, ti):
-    for k in ("command", "file_path", "path", "url", "pattern"):
-        if isinstance(ti, dict) and ti.get(k):
-            return str(ti[k])
-    return json.dumps(ti)[:80] if ti else tool
+def _scan_transcript(path):
+    """One pass over a session log: sum tokens, count tool_use blocks + turns."""
+    tok = tools = turns = 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                msg = o.get("message") or {}
+                if not isinstance(msg, dict):
+                    msg = {}
+                u = msg.get("usage")
+                if isinstance(u, dict):
+                    tok += int(u.get("input_tokens", 0) or 0)
+                    tok += int(u.get("output_tokens", 0) or 0)
+                if o.get("type") == "assistant":
+                    turns += 1
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        for b in content:
+                            if isinstance(b, dict) and b.get("type") == "tool_use":
+                                tools += 1
+    except Exception:
+        return None
+    return {"tok": tok, "tools": tools, "turns": turns}
+
+
+def _today_stats(data):
+    """Today's tokens/tools/turns/session-count (persisted, resets at local
+    midnight) plus an all-time token counter. Returns a dict or None."""
+    tp, sid = data.get("transcript_path"), data.get("session_id")
+    if not tp or not sid:
+        return None
+    sess = _scan_transcript(tp)
+    if sess is None:
+        return None
+    today = time.strftime("%Y-%m-%d", time.localtime())
+    try:
+        with open(TOK_STATE, "r", encoding="utf-8") as f:
+            st = json.load(f)
+    except Exception:
+        st = {}
+    if not isinstance(st, dict):
+        st = {}
+    base = int(st.get("allTokBase", 0) or 0)
+    sessions = st.get("sessions")
+    if st.get("date") != today or not isinstance(sessions, dict):
+        # new day (or first run / legacy format): roll the prior day into base
+        if isinstance(sessions, dict):
+            for v in sessions.values():
+                if isinstance(v, dict):
+                    base += int(v.get("tok", 0) or 0)
+        sessions = {}
+    sessions[sid] = sess
+    st = {"date": today, "sessions": sessions, "allTokBase": base}
+    try:
+        with open(TOK_STATE, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+    except Exception:
+        pass
+
+    def _sum(k):
+        return sum(int(v.get(k, 0) or 0)
+                   for v in sessions.values() if isinstance(v, dict))
+
+    tok = _sum("tok")
+    return {
+        "tokens": tok,
+        "tokensAll": base + tok,
+        "tools": _sum("tools"),
+        "turns": _sum("turns"),
+        "sessions": len(sessions),
+    }
 
 
 def main():
@@ -65,49 +147,29 @@ def main():
     except Exception:
         return 0  # not configured -> do nothing
 
-    if evt == "PreToolUse":
-        tool = data.get("tool_name", "tool")
-        hint = _hint(tool, data.get("tool_input", {}))
-        try:
-            _post_event(ip, tok, {
-                "running": 1, "waiting": 1,
-                "prompt": {"id": str(int(time.time() * 1000)),
-                           "tool": tool, "hint": hint[:120]},
-            })
-        except Exception:
-            return 0  # can't even reach the device -> defer to normal flow
-        # Poll for the tap. A transient error on a single poll must NOT discard a
-        # decision the user already made — keep polling until the window closes.
-        deadline = time.time() + POLL_TIMEOUT
-        dec = "pending"
-        while time.time() < deadline:
-            try:
-                dec = _get_decision(ip, tok)
-            except Exception:
-                dec = "pending"
-            if dec in ("allow", "deny"):
-                break
-            time.sleep(0.4)
-        if dec in ("allow", "deny"):
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": dec,
-                "permissionDecisionReason": "Decided on CYD buddy",
-            }}))
-        return 0  # no tap in time -> defer to Claude's normal permission flow
+    extra = {"project": _project(data)}
+    stats = _today_stats(data)
+    if stats:
+        extra.update(stats)
 
-    # Non-blocking status events.
-    msg = {
-        "SessionStart": "session started",
-        "UserPromptSubmit": "thinking...",
-        "Stop": "done",
-        "SessionEnd": "bye",
-        "Notification": str(data.get("notification", "attention")),
-    }.get(evt, evt)
-    running = 1 if evt in ("UserPromptSubmit", "PostToolUse") else 0
-    total = 0 if evt in ("SessionEnd",) else 1
+    # All events are non-blocking; map each to a (running, total, activity) tuple.
+    # Active events get a rotating whimsical verb (Claude-Code-spinner style).
+    if evt in ("PreToolUse", "PostToolUse", "UserPromptSubmit"):
+        running, total, msg = 1, 1, random.choice(WHIMSY) + "..."
+    elif evt == "SessionStart":
+        running, total, msg = 0, 1, "session started"
+    elif evt == "Stop":
+        running, total, msg = 0, 1, "done"
+    elif evt == "SessionEnd":
+        running, total, msg = 0, 0, "bye"
+    elif evt == "Notification":
+        running, total, msg = 0, 1, str(data.get("notification", "notice"))
+    else:
+        running, total, msg = 0, 1, evt
+
     try:
-        _post_event(ip, tok, {"total": total, "running": running, "msg": msg})
+        _post_event(ip, tok, dict(extra, total=total, running=running,
+                                  msg=msg[:24]))
     except Exception:
         pass
     return 0

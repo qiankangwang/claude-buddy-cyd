@@ -38,37 +38,17 @@ static void handleEvent() {
   AppState &s = g_state;
   s.total = doc["total"] | s.total;
   s.running = doc["running"] | 0;
-  s.waiting = doc["waiting"] | 0;
   if (doc["msg"].is<const char *>())
     s.msg = (const char *)doc["msg"];
+  if (doc["project"].is<const char *>())
+    s.project = (const char *)doc["project"];
   s.tokens = doc["tokens"] | s.tokens;
-
-  if (doc["prompt"].is<JsonObject>()) {
-    JsonObject p = doc["prompt"];
-    s.hasPrompt = true;
-    s.promptId = (const char *)(p["id"] | "");
-    s.tool = (const char *)(p["tool"] | "");
-    s.hint = (const char *)(p["hint"] | "");
-    s.promptMs = millis();
-    s.decision = 0; // fresh prompt awaits a decision
-  }
+  s.tokensAll = doc["tokensAll"] | s.tokensAll;
+  s.tools = doc["tools"] | s.tools;
+  s.turns = doc["turns"] | s.turns;
+  s.sessions = doc["sessions"] | s.sessions;
   s.dirty = true;
   http.send(200, "application/json", "{\"ok\":true}");
-}
-
-static void handleDecision() {
-  if (!authed())
-    return;
-  AppState &s = g_state;
-  const char *d =
-      s.decision == 1 ? "allow" : s.decision == 2 ? "deny" : "pending";
-  String out = String("{\"decision\":\"") + d + "\"}";
-  http.send(200, "application/json", out);
-  if (s.decision != 0) { // resolved and now reported -> clear
-    s.hasPrompt = false;
-    s.decision = 0;
-    s.dirty = true;
-  }
 }
 
 void Server::begin(std::function<void(const String &)> onPortal) {
@@ -88,7 +68,6 @@ void Server::begin(std::function<void(const String &)> onPortal) {
     if (MDNS.begin("claude-cyd"))
       MDNS.addService("http", "tcp", 80);
     http.on("/event", handleEvent);
-    http.on("/decision", handleDecision);
     http.on("/", []() {
       http.send(200, "text/plain", String("CYD Buddy OK ip=") + g_state.ip);
     });
@@ -106,14 +85,21 @@ void Server::loop() {
 
 AppState &Server::state() { return g_state; }
 
-void Server::setDecision(int d) {
-  g_state.decision = d;
-  g_state.dirty = true;
-}
-
 void Server::setToken(const String &t) {
   g_token = t;
   g_state.token = t;
+}
+
+void Server::wifiPortal() {
+  // Non-destructive: opens the captive portal but does NOT erase saved creds, so
+  // the existing password is remembered unless the user submits a new network.
+  WiFiManager wm;
+  wm.setConfigPortalTimeout(180);
+  wm.setAPCallback([](WiFiManager *) {
+    if (g_portalCb)
+      g_portalCb("Claude-CYD-Setup");
+  });
+  wm.startConfigPortal("Claude-CYD-Setup");
 }
 
 } // namespace net
