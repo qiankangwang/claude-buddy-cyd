@@ -1,74 +1,108 @@
 # CYD Claude Buddy
 
-An official-style **Claude desk buddy** (the orange *Clawd* mascot) running on a
-**Cheap Yellow Display** (ESP32-2432S028R). It reacts to your real Claude Code
-sessions and lets you **approve / deny tool calls from the device** — over
-plain WiFi + Claude Code hooks, with **no BLE and no always-on PC process**.
+A desk companion for Claude Code: the orange **Clawd** mascot on a **Cheap
+Yellow Display** (ESP32) that mirrors your live Claude Code activity and usage
+stats — driven entirely by Claude Code hooks over plain WiFi, with **no
+Bluetooth and no always-on PC process**.
 
-> Why not the official Hardware Buddy (BLE)? That feature isn't exposed in the
-> Claude desktop app build available here, so this project reproduces the same
-> experience over a self-hosted transport: a tiny HTTP server on the device +
-> Claude Code hooks on the PC. See [docs/superpowers/specs](docs/superpowers/specs/).
+Clawd reacts to what Claude is doing (sleeping / ready / working) while a stats
+card tracks your usage: tokens today and all-time, tool calls, sessions, turns,
+and the current session's duration. A small Python helper, invoked by Claude
+Code hooks, reads each session's transcript and pushes a snapshot to the device.
 
-## What it does
-- Shows the animated **Clawd** character reacting to Claude's state:
-  `sleep` (idle/asleep) · `idle` · `busy` (working) · `attention` (approval
-  pending, LED blinks) · `heart` (approved in <5s) · `celebrate` (level-up every
-  10 approvals) · `dizzy` (triple-tap, replaces the official "shake").
-- On a permission prompt: shows the tool + args and big **Deny / Approve**
-  touch buttons; your tap is returned to Claude Code as the permission decision.
-- 30s auto screen-off (kept on during approvals); tap to wake.
-- Local stats (approvals / denials / level) on the idle screen.
+> The official "Hardware Buddy" Bluetooth feature is not exposed in the Claude
+> desktop app build used here, so this project reproduces the experience over a
+> self-hosted transport: a tiny HTTP server on the device plus Claude Code hooks
+> on the PC.
+
+## Features
+
+- **Animated Clawd mascot** with states `sleep` · `ready` (idle) · `working`
+  (busy) · `dizzy` (triple-tap easter egg); a whimsical activity verb rotates in
+  sync with the animation while busy.
+- **Live stats dashboard** — tokens today and all-time (`k`/`M`), tool calls,
+  sessions, conversation turns, and session duration.
+- **Settings** (long-press): full Stats panel, touch recalibration, WiFi
+  reconfigure (keeps the saved password).
+- **Captive-portal WiFi setup**; token-authenticated HTTP on the LAN.
+- 30 s auto screen-off; a touch or new activity wakes it.
 
 ## Hardware
-- **ESP32-2432S028R "Cheap Yellow Display"** — ESP32-WROOM-32, 4 MB flash, no PSRAM.
-- Display: **ILI9341** 240×320 (this dual-USB unit is ILI9341, *not* ST7789).
-- Resistive touch: XPT2046. RGB LED, CH340 USB-serial.
 
-## Architecture
+- **ESP32-2432S028R "Cheap Yellow Display"** — ESP32-WROOM-32, 4 MB flash, no PSRAM.
+- Display: **ILI9341** 240×320 — note this dual-USB (CYD2USB) unit is ILI9341,
+  *not* ST7789.
+- Resistive touch (XPT2046), onboard RGB LED, CH340 USB-serial.
+
+## How it works
+
 ```
-Claude Code (PC) --hook--> buddy_hook.py --HTTP/LAN--> CYD (HTTP server)
-   PreToolUse  ───────────────────────────────────────►  shows prompt
-   approve/deny ◄──────────── GET /decision ◄──────────  you tap on screen
+Claude Code (PC)  --hook-->  buddy_hook.py  --HTTP / LAN-->  CYD
+  SessionStart / PreToolUse / Stop / …          POST /event  ->  dashboard
 ```
-- Device: `WiFiManager` captive-portal provisioning + a `WebServer`
-  (`POST /event`, `GET /decision`, `X-Buddy-Token` auth) + `AnimatedGIF`
-  rendering the Clawd pack from LittleFS. Single-threaded loop.
-- PC: `tools/buddy_hook.py` invoked by Claude Code hooks (see `tools/HOOKS.md`).
+
+- **Device** — `WiFiManager` captive portal + a `WebServer` (`POST /event`,
+  `X-Buddy-Token` auth) + `AnimatedGIF` rendering the Clawd pack from LittleFS.
+  Single-threaded; no on-device approval.
+- **PC** — `tools/buddy_hook.py`, invoked by Claude Code hooks, computes the
+  usage rollup from the session transcript and posts it. All events are
+  non-blocking and fail open (a device/network error is swallowed).
 
 ## Build & flash (PlatformIO)
+
 ```bash
 pio run -e cyd -t upload      # firmware
 pio run -e cyd -t uploadfs    # Clawd GIF pack (data/clawd -> LittleFS)
 ```
-- Board driver is a build flag (`ILI9341_2_DRIVER`); if the screen is white/
-  garbled on a different unit, try `ST7789_DRIVER` (+ `TFT_RGB_ORDER=TFT_BGR`).
-- **China / slow proxy:** the first build's toolchain/framework download can stall
-  (`IncompleteRead`). Pre-fetch them in parallel and feed pio local archives —
-  see [platformio-cn-slow-download note] in the dev memory; `../pio-pkgs/dlpar.sh`
-  + `platform_packages = …@file://…` in `platformio.ini`.
 
-## Set up the device (one time)
-1. Flash (above). On first boot the CYD shows **"Join WiFi hotspot: Claude-CYD-Setup"**.
+The display driver is a build flag (`ILI9341_2_DRIVER`). On a different panel
+that shows a white or garbled image, try `ST7789_DRIVER` (and
+`TFT_RGB_ORDER=TFT_BGR`).
+
+> **First-build note (slow/blocked networks).** The initial espressif32
+> toolchain + framework download can stall. If it does, fetch those archives
+> out-of-band (e.g. a parallel, resumable downloader) and feed them to
+> PlatformIO with `platform_packages = …@file://…` in `platformio.ini`.
+
+## Setup
+
+1. Flash the firmware. On first boot the CYD shows **"Join WiFi hotspot:
+   Claude-CYD-Setup"**.
 2. Connect a phone/PC to `Claude-CYD-Setup`, pick your WiFi, enter the password.
-3. The CYD shows its **IP** and a **token** — note both.
+3. The CYD shows its **IP** and a **token** (also under long-press → Settings →
+   Stats).
+4. Create `~/.claude/buddy.json`:
+   ```json
+   { "ip": "<device ip>", "token": "<device token>" }
+   ```
+5. Add the hooks to `~/.claude/settings.json` — see **[tools/HOOKS.md](tools/HOOKS.md)**.
 
-## Wire up Claude Code (one time)
-1. `~/.claude/buddy.json`: `{ "ip": "<device ip>", "token": "<device token>" }`
-2. Add the hooks to `settings.json` — see **[tools/HOOKS.md](tools/HOOKS.md)**.
-   Status hooks (global) make the buddy reflect activity; a `PreToolUse` hook
-   (scoped to a project) routes tool approvals to the device.
+### From another computer
 
-## Credits
-- Protocol & concept: [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy)
-- *Clawd* / *Cloudling* sprite art: [rullerzhou-afk/clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk);
-  Clawd GIF pack via [TaoXieSZ/claude-code-buddy](https://github.com/TaoXieSZ/claude-code-buddy)
-- CYD pinout/config: [witnessmenow/ESP32-Cheap-Yellow-Display](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display)
+Any machine on the same network — or reachable to the device through a mesh VPN
+with a subnet router — can drive the buddy: copy `tools/buddy_hook.py`, add a
+`buddy.json`, and register the hooks. Usage counts are tracked per machine and
+are not merged. See [tools/HOOKS.md](tools/HOOKS.md).
 
-## Limitations
-- Data fidelity is bounded by what hooks expose: token counts / transcript /
-  owner name from the official BLE snapshot aren't available, so `celebrate`
-  is driven by an approval count rather than tokens.
-- LAN transport is plain HTTP guarded by a shared token (fine on a trusted home
-  network; the air is already WPA2-encrypted). No TLS.
-- The BLE implementation (`src/ble/`) is shelved (excluded from the build).
+## Repository layout
+
+```
+src/            firmware: hal/ (display, touch, led, storage), net/ (server),
+                render/ (Clawd GIF); ble/ is shelved (excluded from the build)
+data/clawd/     Clawd GIF character pack (flashed as the LittleFS image)
+tools/          buddy_hook.py + HOOKS.md (hook setup)
+docs/           design notes
+platformio.ini  build configuration
+```
+
+## License & credits
+
+- **Code:** MIT — see [LICENSE](LICENSE).
+- **Clawd character art** (`data/clawd/`): © 2026 Anthropic, PBC, used under MIT,
+  from [TaoXieSZ/claude-code-buddy](https://github.com/TaoXieSZ/claude-code-buddy)
+  with sprite art credited to
+  [rullerzhou-afk/clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk).
+- **Concept & protocol reference:**
+  [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy) (MIT).
+- **CYD pinout / configuration:**
+  [witnessmenow/ESP32-Cheap-Yellow-Display](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display).
