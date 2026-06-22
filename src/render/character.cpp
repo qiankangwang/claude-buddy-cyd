@@ -10,9 +10,14 @@ namespace render {
 
 Character character;
 
+// Hold on the last frame this long between loops/switches so the animation
+// feels calm and the synced activity verb lingers ~1-2s.
+#define LOOP_HOLD_MS 1500UL
+
 // Character region constants come from character.h (render::REG_*).
 static TFT_eSPI *g_tft = nullptr;
 static TFT_eSprite *g_spr = nullptr; // off-screen double-buffer for the region
+static uint32_t g_loops = 0;         // # of GIF loops completed (sync source)
 static int g_tint = 1;               // 0 none, 1 warmer/orange, 2 pinker
 
 // Subtle hue nudge for the character art (applied per drawn pixel).
@@ -255,15 +260,20 @@ void Character::update() {
   if (g_spr)
     g_spr->pushSprite(REG_X, REG_Y); // flicker-free blit of the whole region
   g_nextFrame = millis() + (g_frameDelay > 0 ? g_frameDelay : 80);
-  if (rc == 0) { // reached end of this GIF -> loop / advance idle carousel
+  if (rc == 0) { // reached end of this GIF -> loop / advance carousel
+    g_loops++;
     auto it = g_states.find(g_cur);
     if (it != g_states.end() && it->second.size() > 1)
       g_idx = (g_idx + 1) % it->second.size();
     gif.close();
     g_open = false;
     openCurrentOrFallback();
-    g_nextFrame = millis();
+    // Linger on the last frame before the next loop/switch so the animation
+    // feels calmer (Clawd "rests" a beat between actions).
+    g_nextFrame = millis() + LOOP_HOLD_MS;
   }
 }
+
+uint32_t Character::loops() const { return g_loops; }
 
 } // namespace render

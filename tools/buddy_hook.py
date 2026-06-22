@@ -14,22 +14,12 @@ Fail-open: any device/network error is swallowed (never blocks the session).
 """
 import json
 import os
-import random
 import sys
 import time
 import urllib.request
 
 CFG = os.path.join(os.path.expanduser("~"), ".claude", "buddy.json")
 TOK_STATE = os.path.join(os.path.expanduser("~"), ".claude", "buddy_tokens.json")
-
-# Whimsical "busy" verbs (Claude-Code-spinner style); one is picked per active
-# event so the buddy's activity line rotates as Claude works.
-WHIMSY = [
-    "Whirring", "Pondering", "Brewing", "Churning", "Noodling", "Cogitating",
-    "Conjuring", "Percolating", "Simmering", "Marinating", "Mulling", "Vibing",
-    "Ruminating", "Crunching", "Synthesizing", "Stewing", "Spinning", "Honking",
-    "Forging", "Hatching", "Musing", "Computing", "Cooking", "Tinkering",
-]
 
 # Bypass any system/env HTTP proxy — the buddy is on the LAN.
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -153,9 +143,10 @@ def main():
         extra.update(stats)
 
     # All events are non-blocking; map each to a (running, total, activity) tuple.
-    # Active events get a rotating whimsical verb (Claude-Code-spinner style).
+    # While busy the DEVICE shows its own whimsical verb (synced to the
+    # animation), so the activity text here is only used for idle/end states.
     if evt in ("PreToolUse", "PostToolUse", "UserPromptSubmit"):
-        running, total, msg = 1, 1, random.choice(WHIMSY) + "..."
+        running, total, msg = 1, 1, "working"
     elif evt == "SessionStart":
         running, total, msg = 0, 1, "session started"
     elif evt == "Stop":

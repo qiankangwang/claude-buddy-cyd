@@ -18,6 +18,7 @@ public:
   void setState(const char *state); // switch animation (no-op if unchanged)
   void update();                    // advance + draw frames at the GIF's own pace
   void clearArea();                 // black out the character region
+  uint32_t loops() const;           // # of GIF loops completed (for sync)
 
 private:
   bool openCurrent();

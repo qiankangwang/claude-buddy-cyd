@@ -32,6 +32,17 @@ static bool screenOn = true, forceRedraw = false, wasTouched = false, haveChar =
 // triple-tap detection (shift register of the last 3 tap times)
 static uint32_t tapTimes[3] = {0, 0, 0};
 
+// rotating "busy" verb, advanced in sync with the character animation loop
+static const char *WHIMSY[] = {
+    "Whirring...",  "Pondering...",   "Brewing...",   "Churning...",
+    "Noodling...",  "Cogitating...",  "Conjuring...", "Percolating...",
+    "Simmering...", "Marinating...",  "Mulling...",   "Vibing...",
+    "Crunching...", "Stewing...",     "Spinning...",  "Forging...",
+    "Hatching...",  "Musing...",      "Cooking...",   "Tinkering..."};
+static const int N_WHIMSY = sizeof(WHIMSY) / sizeof(WHIMSY[0]);
+static int verbIdx = 0;
+static uint32_t lastLoops = 0;
+
 // settings / stats / wifi-confirm screens (long-press to open settings)
 static bool settingsOpen = false;
 static bool statsOpen = false;
@@ -195,9 +206,10 @@ static void renderStatic(const char *st) {
   t.fillRect(0, REG_Y + REG_H, W, H - (REG_Y + REG_H), TFT_BLACK);
   t.fillRoundRect(8, cy, W - 16, chh, 12, C_CARD);
 
-  // headline: current activity (hook msg) else project else name.
-  // MC_DATUM centers it vertically in a band so descenders (g/y) clear the rule.
-  const char *head = s.msg.length()       ? s.msg.c_str()
+  // headline: while busy show the device-rotated whimsy verb (synced to the
+  // animation loop); otherwise the hook's activity msg, else project, else name.
+  const char *head = !strcmp(st, "busy")  ? WHIMSY[verbIdx]
+                     : s.msg.length()      ? s.msg.c_str()
                      : s.project.length()  ? s.project.c_str()
                                            : "Claude Buddy";
   gtextClamp(head, W / 2, cy + 18, &FreeSansBold12pt7b, C_TEXT, C_CARD, MC_DATUM,
@@ -480,6 +492,16 @@ void loop() {
   if (!screenOn) {
     delay(8);
     return;
+  }
+
+  // ---- rotate the busy verb in sync with the animation loop ----
+  if (!strcmp(st, "busy")) {
+    uint32_t lc = haveChar ? render::character.loops() : (now / 2500);
+    if (lc != lastLoops) {
+      lastLoops = lc;
+      verbIdx = (verbIdx + 1) % N_WHIMSY;
+      forceRedraw = true; // repaint the headline with the new verb
+    }
   }
 
   // ---- render ----
