@@ -16,10 +16,7 @@
       "busy_2.gif"
     ],
     "attention": "attention.gif",
-    "celebrate": [
-      "celebrate.gif",
-      "celebrate_1.gif"
-    ],
+    "celebrate": "celebrate.gif",
     "dizzy": "dizzy.gif",
     "heart": "heart.gif"
   }
