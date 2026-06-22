@@ -15,11 +15,4 @@ void Display::backlight(bool on) {
   digitalWrite(TFT_BL, on ? HIGH : LOW);
 }
 
-void Display::splash(const char* line) {
-  tft_.fillScreen(TFT_BLACK);
-  tft_.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft_.setTextDatum(MC_DATUM);
-  tft_.drawString(line, tft_.width() / 2, tft_.height() / 2, 4);
-}
-
 } // namespace hal

@@ -10,7 +10,6 @@ public:
   void begin();
   TFT_eSPI& tft() { return tft_; }
   void backlight(bool on);
-  void splash(const char* line);
 
 private:
   TFT_eSPI tft_;
