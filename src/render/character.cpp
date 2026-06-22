@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <FS.h>
 #include <LittleFS.h>
+#include <esp_random.h>
 #include <map>
 #include <vector>
 
@@ -271,7 +272,11 @@ void Character::update() {
     // multi-clip state every SWITCH_INTERVAL_MS, so clips change less often
     // without slowing playback or freezing.
     if (multi && now - g_lastSwitch >= SWITCH_INTERVAL_MS) {
-      g_idx = (g_idx + 1) % it->second.size();
+      int sz = (int)it->second.size();
+      int nxt = g_idx;
+      while (nxt == g_idx) // pick a random clip, never the same one twice
+        nxt = (int)(esp_random() % (uint32_t)sz);
+      g_idx = nxt;
       g_lastSwitch = now;
       g_loops++; // sync signal: the clip just switched
     }
