@@ -10,14 +10,15 @@ namespace render {
 
 Character character;
 
-// Hold on the last frame this long between loops/switches so the animation
-// feels calm and the synced activity verb lingers ~1-2s.
-#define LOOP_HOLD_MS 1500UL
+// How long a clip plays (looping smoothly) before a multi-clip state switches
+// to the next clip. Larger = clips change less often (no slowdown/freeze).
+#define SWITCH_INTERVAL_MS 5000UL
 
 // Character region constants come from character.h (render::REG_*).
 static TFT_eSPI *g_tft = nullptr;
 static TFT_eSprite *g_spr = nullptr; // off-screen double-buffer for the region
-static uint32_t g_loops = 0;         // # of GIF loops completed (sync source)
+static uint32_t g_loops = 0;         // # of clip switches (sync source)
+static uint32_t g_lastSwitch = 0;    // millis of the last clip switch
 static int g_tint = 1;               // 0 none, 1 warmer/orange, 2 pinker
 
 // Subtle hue nudge for the character art (applied per drawn pixel).
@@ -243,6 +244,7 @@ void Character::setState(const char *state) {
     return;
   g_cur = state;
   g_idx = 0;
+  g_lastSwitch = millis(); // restart the clip-switch timer for the new state
   if (g_open) {
     gif.close();
     g_open = false;
@@ -259,18 +261,24 @@ void Character::update() {
   int rc = gif.playFrame(false, &g_frameDelay); // composites into the buffer
   if (g_spr)
     g_spr->pushSprite(REG_X, REG_Y); // flicker-free blit of the whole region
-  g_nextFrame = millis() + (g_frameDelay > 0 ? g_frameDelay : 80);
-  if (rc == 0) { // reached end of this GIF -> loop / advance carousel
-    g_loops++;
+  uint32_t fd = (g_frameDelay > 0 ? (uint32_t)g_frameDelay : 80);
+  g_nextFrame = millis() + fd; // native frame pace -> smooth playback
+  if (rc == 0) { // current GIF finished one pass
     auto it = g_states.find(g_cur);
-    if (it != g_states.end() && it->second.size() > 1)
+    bool multi = (it != g_states.end() && it->second.size() > 1);
+    uint32_t now = millis();
+    // Keep replaying the SAME GIF (smooth) and only switch to the next one in a
+    // multi-clip state every SWITCH_INTERVAL_MS, so clips change less often
+    // without slowing playback or freezing.
+    if (multi && now - g_lastSwitch >= SWITCH_INTERVAL_MS) {
       g_idx = (g_idx + 1) % it->second.size();
+      g_lastSwitch = now;
+      g_loops++; // sync signal: the clip just switched
+    }
     gif.close();
     g_open = false;
     openCurrentOrFallback();
-    // Linger on the last frame before the next loop/switch so the animation
-    // feels calmer (Clawd "rests" a beat between actions).
-    g_nextFrame = millis() + LOOP_HOLD_MS;
+    g_nextFrame = millis();
   }
 }
 
