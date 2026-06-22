@@ -8,9 +8,28 @@ existing pack so they drop in seamlessly.
 ## Reference (match this exactly)
 
 The canonical style reference is the existing pack in `data/clawd/` — open
-`busy_0.gif`, `busy_1.gif`, `busy_2.gif` and match their character design,
-proportions, palette, line weight, and "feel". **Clawd** is an orange pixel-art
-crab mascot (Claude + claw). Do not redesign the character; reuse its look.
+`idle.gif` and `busy_0.gif` and match them. **Clawd is NOT a crab** — it is a
+simple, blocky coral creature.
+
+### Clawd — exact build (from the real frames)
+
+On a 120 px-wide black canvas, Clawd sits low and centered:
+
+- **Body:** one solid coral (`#D97757`) **rounded rectangle, wide and flat**,
+  about **78 px wide × 40 px tall** (≈ 2:1), corners softened ~3 px. **Flat fill,
+  no gradient/shading**; an optional 1 px lighter top/left edge.
+- **Eyes:** two identical black eyes in the upper third, at ~**38%** and ~**62%**
+  of the body width. **Resting** = tall thin **vertical bars** (~6×16 px, `▮ ▮`).
+  **Busy/concentrating** = short **horizontal dashes** (~10×3 px, `- -`).
+- **Arms:** one short coral **stub poking straight out each side** at mid-height
+  (~8–12 px). They pose/move per action.
+- **Legs:** **four** short coral stubs (~6 px wide × ~12 px tall) hanging from
+  the bottom edge, evenly spaced.
+- **Absolutely NOT:** no pincers/claws, no eyestalks, no antennae, no spider
+  legs, no mouth/nose. It is a wide coral block with slot/dash eyes, two side-arm
+  stubs, and four little legs.
+- **Thought bubble (on-model):** the official "thinking" clip puts a white
+  pixel **thought-bubble above the head with 3 small blue dots** that cycle.
 
 ## Hard technical requirements (the device renderer depends on these)
 
@@ -69,19 +88,40 @@ device can't resolve at small size.
   so budget ~100–130 KB per new clip (a 120 px, ~45-frame, low-palette GIF lands
   there comfortably).
 
-## Ready-to-paste prompt for an AI image/pixel tool
+## Ready-to-paste prompt (character + one action)
 
-> Pixel-art animation, 120×118 px, transparent-style on a solid black
-> background. Character: an orange (#D97757) crab mascot named "Clawd" — match
-> the attached reference frames exactly (same proportions, eyes, palette, crisp
-> pixel style, no anti-aliasing). Animate a smooth, seamless ~45-frame loop of
-> Clawd **[typing on a tiny laptop]**, centered, gentle bob, ~70 ms per frame.
-> Limited palette (coral body, black bg, white highlights, grey shadow). Output
-> an animated GIF, non-interlaced, full frames, loop forever.
+> Crisp pixel art, 120×118 px, hard edges, no anti-aliasing, on a solid black
+> background. **Character "Clawd"** — a simple blocky coral creature, NOT a crab:
+> a single solid coral `#D97757` **wide flat rounded rectangle** body (~78×40 px,
+> ~2:1), flat fill no shading. **Two eyes** in the upper third at ~38% and ~62%
+> width — short black **horizontal dashes** when working. **One short coral
+> stub-arm out each side**; **four short coral stub-legs** hanging from the
+> bottom. No pincers, no eyestalks, no antennae, no mouth. Centered, sitting low.
+> Animate a smooth, seamless **~45-frame** loop @ ~70 ms of Clawd **[ACTION]**,
+> gentle body bob. Palette: coral body, black bg+eyes, white highlights, one
+> muted blue. Output an **animated GIF**, non-interlaced, full frames, loop
+> forever.
 
-Attach `busy_0.gif` (and `idle.gif`) as the style/character reference for
-img2img or a reference-image workflow — that anchors the look far better than a
-text description alone.
+Replace `[ACTION]` with one of the actions below. **Also attach `idle.gif` +
+`busy_0.gif` as reference images** (img2img / reference workflow) — text plus the
+real frames anchors the look far better than text alone.
+
+## Per-action motion (each its own clip)
+
+- **Typing** — a small dark laptop (`#1E1E2E` screen w/ flickering green code,
+  teal keys) in front; the two side stub-arms alternate tapping down on the keys;
+  eyes are horizontal dashes.
+- **Thinking** (the canonical busy look) — a white pixel **thought-bubble above
+  the head with 3 muted-blue dots** that cycle/pulse; arms slightly raised; calm
+  bob.
+- **Stirring a pot** — a small dark pot in front; one stub-arm holds a spoon and
+  rotates it in a circle; a few steam pixels rise; body leans with the motion.
+- **Hammering** — one stub-arm raised holding a small mallet, swings down onto a
+  peg and the body recoils a little on each hit; the other arm braces.
+
+Key correction for any tool that keeps drawing it wrong: **Clawd is a wide flat
+coral BLOCK with slot/dash eyes, two side-arm stubs and four legs — not a crab,
+not a tall blob, not a bug.** Arms and legs must visibly move for the action.
 
 ## For a human artist (Aseprite)
 
