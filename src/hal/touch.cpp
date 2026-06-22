@@ -27,11 +27,22 @@ void Touch::begin(Display &disp, Storage &storage) {
   touchSPI.begin(T_CLK, T_MISO, T_MOSI, T_CS);
   ts.begin(touchSPI);
   ts.setRotation(0);
+  // Fixed factory calibration for this CYD unit (auto; no manual step / button).
+  // Measured once via 3-point calibration; resistive panels are uniform enough
+  // that these constants work out of the box.
+  cal_.xUsesRawX = 1;
+  cal_.yUsesRawX = 0;
+  cal_.xLo = 1837;
+  cal_.xHi = 3559;
+  cal_.yLo = 1590;
+  cal_.yHi = 3477;
+  cal_.magic = CAL_MAGIC;
+  calibrated_ = true;
+  // A user recalibration (Settings -> Recalibrate, with visible targets) is
+  // saved to NVS and overrides these defaults.
   TouchCal c{};
-  if (store_->getBytes("touchcal", &c, sizeof(c)) && c.magic == CAL_MAGIC) {
+  if (store_->getBytes("touchcal", &c, sizeof(c)) && c.magic == CAL_MAGIC)
     cal_ = c;
-    calibrated_ = true;
-  }
 }
 
 bool Touch::rawPressed() { return ts.touched(); }

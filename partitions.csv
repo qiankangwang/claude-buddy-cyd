@@ -1,4 +1,4 @@
-# Single-app (no dual-OTA) layout for 4MB flash, to fit <=1.8MB character packs.
+# Single-app (no dual-OTA) layout for 4MB flash; LittleFS holds the character pack.
 # Name,     Type, SubType, Offset,   Size
 nvs,        data, nvs,     0x9000,   0x5000
 app0,       app,  factory, 0x10000,  0x1D0000
