@@ -66,6 +66,10 @@ def _scan_transcript(path):
                 if isinstance(u, dict):
                     tok += int(u.get("input_tokens", 0) or 0)
                     tok += int(u.get("output_tokens", 0) or 0)
+                    # cache reads/writes are the bulk of real usage on long
+                    # sessions; omitting them undercounts by ~90%.
+                    tok += int(u.get("cache_creation_input_tokens", 0) or 0)
+                    tok += int(u.get("cache_read_input_tokens", 0) or 0)
                 if o.get("type") == "assistant":
                     turns += 1
                     content = msg.get("content")
@@ -97,26 +101,44 @@ def _today_stats(data):
         st = {}
     base = int(st.get("allTokBase", 0) or 0)
     sessions = st.get("sessions")
+    carry = st.get("carry")
+    if not isinstance(carry, dict):
+        carry = {}
     if st.get("date") != today or not isinstance(sessions, dict):
-        # new day (or first run / legacy format): roll the prior day into base
+        # New local day (or first run / legacy format): roll the prior day's
+        # tokens into the all-time base, and remember each session's rolled
+        # count in `carry` so a session that continues PAST midnight doesn't get
+        # its pre-midnight tokens counted again today (which double-counted them
+        # in tokensAll, since base already holds them).
+        new_carry = {}
         if isinstance(sessions, dict):
-            for v in sessions.values():
+            for k, v in sessions.items():
                 if isinstance(v, dict):
-                    base += int(v.get("tok", 0) or 0)
+                    t = int(v.get("tok", 0) or 0)
+                    base += t
+                    new_carry[k] = t
         sessions = {}
+        carry = new_carry
     sessions[sid] = sess
-    st = {"date": today, "sessions": sessions, "allTokBase": base}
+    st = {"date": today, "sessions": sessions, "allTokBase": base,
+          "carry": carry}
     try:
         with open(TOK_STATE, "w", encoding="utf-8") as f:
             json.dump(st, f)
     except Exception:
         pass
 
+    # today's tokens = each session's lifetime tokens minus whatever already
+    # rolled into base at the last midnight (0 for sessions that started today).
+    tok = 0
+    for k, v in sessions.items():
+        if isinstance(v, dict):
+            tok += max(0, int(v.get("tok", 0) or 0) - int(carry.get(k, 0) or 0))
+
     def _sum(k):
         return sum(int(v.get(k, 0) or 0)
                    for v in sessions.values() if isinstance(v, dict))
 
-    tok = _sum("tok")
     return {
         "tokens": tok,
         "tokensAll": base + tok,
@@ -158,9 +180,16 @@ def main():
     else:
         running, total, msg = 0, 1, evt
 
+    # Transient device animation cue (short, non-sticky): Claude wants you
+    # (Notification), finished a turn (Stop), or a session just began (hello).
+    fx = {"Notification": "attention", "Stop": "celebrate",
+          "SessionStart": "heart"}.get(evt, "")
+
     try:
-        _post_event(ip, tok, dict(extra, total=total, running=running,
-                                  msg=msg[:24]))
+        payload = dict(extra, total=total, running=running, msg=msg[:24])
+        if fx:
+            payload["fx"] = fx
+        _post_event(ip, tok, payload)
     except Exception:
         pass
     return 0
