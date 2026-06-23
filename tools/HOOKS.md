@@ -33,7 +33,9 @@ buddy helper to the events you want the device to react to:
   }
 }
 ```
-Replace `<repo>` with the absolute path to this checkout. `PreToolUse`/
+Replace `<repo>` with the absolute path to this checkout — **or**, for a setup
+that doesn't depend on the repo, copy the single file `buddy_hook.py` to
+`~/.claude/buddy_hook.py` and point the command there (see §4). `PreToolUse`/
 `PostToolUse` make the activity + tool counter update live on every tool call.
 
 ## 3. What it sends
@@ -43,22 +45,34 @@ while busy) plus today's usage rollup read from the session transcript: tokens
 (today + all-time), tool calls, assistant turns, and session count. Today's
 counts persist in `~/.claude/buddy_tokens.json` and reset at local midnight.
 
-## 4. Using it from another computer
+## 4. Use it from another computer (no repo needed)
 
-Any machine running Claude Code can drive the buddy, as long as:
+The flashed device is **fully standalone** — firmware and the animation pack live
+in its own flash, so it needs no PC, no repo, and no cloud; it just boots, joins
+your WiFi, and waits for events. To drive it from a machine that **doesn't have
+this repository**, the only thing that machine needs is the **single** helper
+file: `buddy_hook.py` depends on nothing but the Python 3 standard library and
+reads only `~/.claude/buddy.json` and `~/.claude/buddy_tokens.json` (never the
+repo). So it's just:
 
-1. **It can reach the device over the network.** The device serves HTTP on the
-   LAN, so the easiest case is "same WiFi". To drive it from a machine that is
-   off the home network, expose the device's address over a mesh VPN
-   (e.g. Tailscale with a subnet router advertising the device's LAN subnet) and
-   point `buddy.json` at whatever address that machine can reach.
-2. **The helper + config are installed there:** copy `tools/buddy_hook.py`
-   (or clone this repo), create `~/.claude/buddy.json`, and add the hooks above
-   to that machine's `~/.claude/settings.json`. Python 3 must be on `PATH`.
+1. **Copy one file** — put `buddy_hook.py` on that machine; a good
+   repo-independent home is `~/.claude/buddy_hook.py`.
+2. **Config** — create `~/.claude/buddy.json` with the device `ip` + `token`
+   (shown on the device under Settings → Stats).
+3. **Hooks** — add the block from §2 to that machine's `~/.claude/settings.json`,
+   with the command pointing where you put the file, e.g.
+   `python "~/.claude/buddy_hook.py"` (use an absolute path; on Windows
+   `%USERPROFILE%\.claude\buddy_hook.py`).
 
-Note: each machine keeps its **own** `buddy_tokens.json`, so today/all-time
-counts are per-machine, not merged. If two machines push at once, the device
-shows whichever pushed last.
+Requirements: **Python 3 on `PATH`**, and the machine must be able to **reach the
+device** — same WiFi is simplest; off-network works via a mesh VPN (e.g. Tailscale
+with a subnet router advertising the device's LAN subnet), with `buddy.json`
+pointed at whatever address that machine can reach. `buddy_tokens.json` is created
+automatically on first run.
+
+Each machine keeps its **own** `buddy_tokens.json`, so today/all-time counts are
+per-machine, not merged. If two machines push at once, the device shows whichever
+pushed last.
 
 ## 5. Behaviour / safety
 
