@@ -1,9 +1,24 @@
-# CYD Claude Buddy
+# Claude Buddy
 
-A desk companion for Claude Code: the orange **Clawd** mascot on a **Cheap
-Yellow Display** (ESP32) that mirrors your live Claude Code activity and usage
-stats — driven entirely by Claude Code hooks over plain WiFi, with **no
-Bluetooth and no always-on PC process**.
+<p align="center">
+  <img src="assets/ready.gif" width="116" alt="ready">
+  <img src="assets/working.gif" width="116" alt="working">
+  <img src="assets/celebrate.gif" width="116" alt="celebrate">
+  <img src="assets/dizzy.gif" width="116" alt="dizzy">
+  <img src="assets/heart.gif" width="116" alt="heart">
+</p>
+<p align="center"><sub>ready&nbsp;·&nbsp;working&nbsp;·&nbsp;celebrate&nbsp;·&nbsp;dizzy&nbsp;·&nbsp;heart</sub></p>
+
+A desk companion for Claude Code: the orange **Clawd** mascot on a small **ESP32
+TFT display** that mirrors your live Claude Code activity and usage stats —
+driven entirely by Claude Code hooks over plain WiFi, with **no Bluetooth and no
+always-on PC process**.
+
+The reference build targets the **Cheap Yellow Display (CYD)** because it's the
+cheapest all-in-one ESP32+screen+touch board, but nothing in the app is
+CYD-specific: the firmware is a thin HAL over `TFT_eSPI`, so it ports to other
+ESP32 + TFT panels with a few config changes — see
+[Porting](#porting-to-other-boards).
 
 Clawd reacts to what Claude is doing (sleeping / ready / working) while a stats
 card tracks your usage: tokens today and all-time, tool calls, sessions, turns,
@@ -18,26 +33,20 @@ Code hooks, reads each session's transcript and pushes a snapshot to the device.
 ## Features
 
 - **Animated Clawd mascot** with states `sleep` · `ready` (idle) · `working`
-  (busy) · `dizzy` (triple-tap easter egg); a whimsical activity verb rotates in
-  sync with the animation while busy.
+  (busy) · `dizzy` (triple-tap easter egg), plus event reactions — `attention`
+  when Claude needs you, `celebrate` when a turn finishes, `heart` on a new
+  session. A whimsical activity verb rotates in sync with the animation while busy.
 - **Live stats dashboard** — tokens today and all-time (`k`/`M`), tool calls,
-  sessions, conversation turns, and session duration.
+  sessions, conversation turns, and session duration; the detail panel updates live.
 - **Settings** (long-press): full Stats panel, touch recalibration, WiFi
   reconfigure (keeps the saved password).
 - **Captive-portal WiFi setup**; token-authenticated HTTP on the LAN.
 - 30 s auto screen-off; a touch or new activity wakes it.
 
-## Hardware
-
-- **ESP32-2432S028R "Cheap Yellow Display"** — ESP32-WROOM-32, 4 MB flash, no PSRAM.
-- Display: **ILI9341** 240×320 — note this dual-USB (CYD2USB) unit is ILI9341,
-  *not* ST7789.
-- Resistive touch (XPT2046), onboard RGB LED, CH340 USB-serial.
-
 ## How it works
 
 ```
-Claude Code (PC)  --hook-->  buddy_hook.py  --HTTP / LAN-->  CYD
+Claude Code (PC)  --hook-->  buddy_hook.py  --HTTP / LAN-->  device
   SessionStart / PreToolUse / Stop / …          POST /event  ->  dashboard
 ```
 
@@ -46,7 +55,35 @@ Claude Code (PC)  --hook-->  buddy_hook.py  --HTTP / LAN-->  CYD
   Single-threaded; no on-device approval.
 - **PC** — `tools/buddy_hook.py`, invoked by Claude Code hooks, computes the
   usage rollup from the session transcript and posts it. All events are
-  non-blocking and fail open (a device/network error is swallowed).
+  non-blocking and fail open (a device/network error is swallowed, so it can
+  never slow Claude down).
+
+## Hardware
+
+**Reference board — ESP32-2432S028R "Cheap Yellow Display" (CYD):**
+
+- ESP32-WROOM-32, 4 MB flash, no PSRAM.
+- Display: **ILI9341** 240×320 — the dual-USB "CYD2USB" unit is ILI9341, *not*
+  ST7789 (feeding it the ST7789 driver gives a white screen).
+- Resistive touch (XPT2046), onboard RGB LED, CH340 USB-serial.
+
+### Porting to other boards
+
+The firmware is a thin HAL (`src/hal/`: display, touch, led, storage) over
+`TFT_eSPI`, and everything above it — networking, hooks, stats, the GIF
+character system — is hardware-independent. To run it on another ESP32 + TFT:
+
+- **Display:** set the matching `*_DRIVER` flag and pins in `platformio.ini`
+  (`TFT_eSPI` supports ILI9341 / ST7789 / ST7735 / ILI9488 / …). The character
+  region and UI lay themselves out from `display.width()/height()`.
+- **Touch (optional):** adjust the XPT2046 pins in `src/hal/touch.cpp`, or stub
+  `hal::Touch` — touch only drives the Settings menu and the easter egg.
+- **LED (optional):** `src/hal/led.cpp`; safe to no-op if your board has none.
+- **Flash / partition:** the Clawd pack needs ~0.6 MB of LittleFS — size the
+  data partition to your board's flash.
+
+The Clawd art is a plain GIF pack (`data/clawd/`, 120 px-wide, black background),
+so you can also drop in your own character without touching code.
 
 ## Build & flash (PlatformIO)
 
@@ -56,8 +93,8 @@ pio run -e cyd -t uploadfs    # Clawd GIF pack (data/clawd -> LittleFS)
 ```
 
 The display driver is a build flag (`ILI9341_2_DRIVER`). On a different panel
-that shows a white or garbled image, try `ST7789_DRIVER` (and
-`TFT_RGB_ORDER=TFT_BGR`).
+that shows a white or garbled image, try the driver/colour-order flags for your
+controller (e.g. `ST7789_DRIVER` + `TFT_RGB_ORDER=TFT_BGR`).
 
 > **First-build note (slow/blocked networks).** The initial espressif32
 > toolchain + framework download can stall. If it does, fetch those archives
@@ -66,10 +103,10 @@ that shows a white or garbled image, try `ST7789_DRIVER` (and
 
 ## Setup
 
-1. Flash the firmware. On first boot the CYD shows **"Join WiFi hotspot:
+1. Flash the firmware. On first boot the device shows **"Join WiFi hotspot:
    Claude-CYD-Setup"**.
 2. Connect a phone/PC to `Claude-CYD-Setup`, pick your WiFi, enter the password.
-3. The CYD shows its **IP** and a **token** (also under long-press → Settings →
+3. The device shows its **IP** and a **token** (also under long-press → Settings →
    Stats).
 4. Create `~/.claude/buddy.json`:
    ```json
@@ -90,6 +127,7 @@ are not merged. See [tools/HOOKS.md](tools/HOOKS.md).
 src/            firmware: hal/ (display, touch, led, storage), net/ (server),
                 render/ (Clawd GIF); ble/ is shelved (excluded from the build)
 data/clawd/     Clawd GIF character pack (flashed as the LittleFS image)
+assets/         README preview GIFs
 tools/          buddy_hook.py + HOOKS.md (hook setup)
 docs/           design notes
 platformio.ini  build configuration
