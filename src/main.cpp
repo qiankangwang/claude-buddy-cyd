@@ -139,10 +139,31 @@ static const char *stateName(uint32_t now) {
   if (!s.wifiUp)
     return "sleep";
   if (s.running > 0)
-    return "busy";
+    return s.act.length() ? s.act.c_str() : "busy"; // tool-specific clip, else carousel
   if (s.total > 0)
     return "idle";
   return "sleep";
+}
+
+// the running "work" clips share one look (WORKING / coral / blue LED) and a verb
+static bool isWork(const char *st) {
+  static const char *W[] = {"busy",      "typing",  "building",  "thinking",
+                            "juggling",  "groove",  "carrying",  "debugger",
+                            "reading"};
+  for (auto w : W)
+    if (!strcmp(st, w)) return true;
+  return false;
+}
+static const char *actVerb(const char *st) {
+  if (!strcmp(st, "typing")) return "Editing...";
+  if (!strcmp(st, "building")) return "Running...";
+  if (!strcmp(st, "thinking")) return "Thinking...";
+  if (!strcmp(st, "reading")) return "Reading...";
+  if (!strcmp(st, "juggling")) return "Delegating...";
+  if (!strcmp(st, "groove")) return "Vibing...";
+  if (!strcmp(st, "carrying")) return "Moving...";
+  if (!strcmp(st, "debugger")) return "Inspecting...";
+  return "Working...";
 }
 
 static void driveLed(const char *st, uint32_t now) {
@@ -150,27 +171,30 @@ static void driveLed(const char *st, uint32_t now) {
     led.set(true, false, true); // magenta / pink
   else if (!strcmp(st, "celebrate"))
     led.set(false, true, false); // green
-  else if (!strcmp(st, "attention"))
+  else if (!strcmp(st, "attention") || !strcmp(st, "notification") ||
+           !strcmp(st, "error"))
     led.set(true, false, false); // red
-  else if (!strcmp(st, "busy"))
+  else if (isWork(st))
     led.set(false, false, true); // blue
   else
     led.off();
 }
 
 static uint16_t stateColor(const char *st) {
-  if (!strcmp(st, "busy")) return C_CORAL;       // orange
+  if (isWork(st)) return C_CORAL;                // orange (working)
   if (!strcmp(st, "dizzy")) return 0xA81F;       // purple
-  if (!strcmp(st, "attention")) return 0xFD20;   // amber alert
+  if (!strcmp(st, "attention") || !strcmp(st, "notification")) return 0xFD20; // amber alert
+  if (!strcmp(st, "error")) return 0xC1C5;       // muted red
   if (!strcmp(st, "celebrate")) return 0x2DEA;   // green
   if (!strcmp(st, "heart")) return 0xFB56;        // pink
   if (!strcmp(st, "idle")) return 0x2DEA;        // green (connected, ready)
   return 0x4208;                                 // asleep grey
 }
 static const char *stateLabel(const char *st) {
-  if (!strcmp(st, "busy")) return "WORKING";
+  if (isWork(st)) return "WORKING";
   if (!strcmp(st, "dizzy")) return "DIZZY";
-  if (!strcmp(st, "attention")) return "ATTENTION";
+  if (!strcmp(st, "attention") || !strcmp(st, "notification")) return "NEEDS YOU";
+  if (!strcmp(st, "error")) return "OOPS";
   if (!strcmp(st, "celebrate")) return "DONE!";
   if (!strcmp(st, "heart")) return "HELLO";
   if (!strcmp(st, "idle")) return "READY";
@@ -257,6 +281,8 @@ static const char *headlineText(const char *st) {
   net::AppState &s = net::server.state();
   if (!strcmp(st, "busy"))
     return WHIMSY[verbIdx];
+  if (isWork(st)) // tool-specific activity -> its own verb
+    return actVerb(st);
   if (s.msg.length())
     return s.msg.c_str();
   if (s.project.length())

@@ -184,29 +184,46 @@ def main():
     if stats:
         extra.update(stats)
 
-    # All events are non-blocking; map each to a (running, total, activity) tuple.
-    # While busy the DEVICE shows its own whimsical verb (synced to the
-    # animation), so the activity text here is only used for idle/end states.
-    if evt in ("PreToolUse", "PostToolUse", "UserPromptSubmit"):
-        running, total, msg = 1, 1, "working"
+    # Map the live tool to an activity clip the device shows while running. The
+    # device animates `act` (typing/building/thinking/juggling); empty -> its own
+    # random busy carousel. `fx` is a one-shot reaction (error/notification/...).
+    # NOTE: the device resets running=0 on any event missing the field, so EVERY
+    # event sends running explicitly.
+    TOOL_ACT = {
+        "Edit": "typing", "Write": "typing", "MultiEdit": "typing",
+        "NotebookEdit": "typing", "Bash": "building", "BashOutput": "building",
+        "KillShell": "building", "Read": "thinking", "Grep": "thinking",
+        "Glob": "thinking", "WebFetch": "thinking", "WebSearch": "thinking",
+        "Task": "juggling",
+    }
+    act = fx = ""
+    if evt in ("PreToolUse", "PostToolUse"):
+        running, total = 1, 1
+        act = TOOL_ACT.get(data.get("tool_name", ""), "")
+        msg = act or "working"
+        if evt == "PostToolUse":
+            tr = data.get("tool_response")
+            if isinstance(tr, dict) and (tr.get("is_error") or tr.get("error")):
+                fx = "error"  # a tool failed -> brief wince (running stays 1)
+    elif evt == "UserPromptSubmit":
+        running, total, act, msg = 1, 1, "thinking", "thinking"
     elif evt == "SessionStart":
-        running, total, msg = 0, 1, "session started"
+        running, total, msg, fx = 0, 1, "session started", "heart"
     elif evt == "Stop":
-        running, total, msg = 0, 1, "done"
+        running, total, msg, fx = 0, 1, "done", "celebrate"
+    elif evt == "PreCompact":
+        running, total, msg, fx = 1, 1, "compacting", "sweeping"
+    elif evt == "Notification":
+        running, total, msg, fx = 0, 1, str(data.get("notification", "notice")), "notification"
     elif evt == "SessionEnd":
         running, total, msg = 0, 0, "bye"
-    elif evt == "Notification":
-        running, total, msg = 0, 1, str(data.get("notification", "notice"))
     else:
         running, total, msg = 0, 1, evt
 
-    # Transient device animation cue (short, non-sticky): Claude wants you
-    # (Notification), finished a turn (Stop), or a session just began (hello).
-    fx = {"Notification": "attention", "Stop": "celebrate",
-          "SessionStart": "heart"}.get(evt, "")
-
     try:
         payload = dict(extra, total=total, running=running, msg=msg[:24])
+        if act:
+            payload["act"] = act
         if fx:
             payload["fx"] = fx
         _post_event(ip, tok, payload)
