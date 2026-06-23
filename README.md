@@ -1,13 +1,13 @@
 # CYD Claude Buddy
 
 <p align="center">
-  <img src="assets/ready.gif" width="116" alt="ready">
-  <img src="assets/working.gif" width="116" alt="working">
-  <img src="assets/celebrate.gif" width="116" alt="celebrate">
-  <img src="assets/dizzy.gif" width="116" alt="dizzy">
-  <img src="assets/heart.gif" width="116" alt="heart">
+  <img src="assets/painting.gif" width="116" alt="painting">
+  <img src="assets/sweeping.gif" width="116" alt="sweeping">
+  <img src="assets/stirring.gif" width="116" alt="stirring">
+  <img src="assets/building.gif" width="116" alt="building">
+  <img src="assets/typing.gif" width="116" alt="typing">
 </p>
-<p align="center"><sub>ready&nbsp;·&nbsp;working&nbsp;·&nbsp;celebrate&nbsp;·&nbsp;dizzy&nbsp;·&nbsp;heart</sub></p>
+<p align="center"><sub>Clawd hard at work — painting&nbsp;·&nbsp;sweeping&nbsp;·&nbsp;stirring&nbsp;·&nbsp;building&nbsp;·&nbsp;typing</sub></p>
 
 A desk companion for Claude Code: the orange **Clawd** mascot on a **Cheap
 Yellow Display** (ESP32) that mirrors your live Claude Code activity and usage
