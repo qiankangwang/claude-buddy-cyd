@@ -25,6 +25,9 @@ static const int REG_Y = render::REG_Y, REG_H = render::REG_H; // single source
 
 // transient animation window (triple-tap easter egg)
 static uint32_t dizzyUntil = 0;
+// transient hook-driven effect (attention/celebrate/heart), shown for a few sec
+static uint32_t fxUntil = 0;
+static String fxState;
 // power / interaction
 static uint32_t lastInteraction = 0;
 static uint32_t sessionStart = 0; // millis when the current Claude session began
@@ -126,6 +129,8 @@ static String loadOrCreateToken() {
 
 static const char *stateName(uint32_t now) {
   net::AppState &s = net::server.state();
+  if (now < fxUntil)
+    return fxState.c_str(); // transient hook effect (attention/celebrate/heart)
   if (now < dizzyUntil)
     return "dizzy";
   if (!s.wifiUp)
@@ -138,8 +143,12 @@ static const char *stateName(uint32_t now) {
 }
 
 static void driveLed(const char *st, uint32_t now) {
-  if (!strcmp(st, "dizzy"))
-    led.set(true, false, true); // magenta
+  if (!strcmp(st, "dizzy") || !strcmp(st, "heart"))
+    led.set(true, false, true); // magenta / pink
+  else if (!strcmp(st, "celebrate"))
+    led.set(false, true, false); // green
+  else if (!strcmp(st, "attention"))
+    led.set(true, false, false); // red
   else if (!strcmp(st, "busy"))
     led.set(false, false, true); // blue
   else
@@ -147,26 +156,32 @@ static void driveLed(const char *st, uint32_t now) {
 }
 
 static uint16_t stateColor(const char *st) {
-  if (!strcmp(st, "busy")) return C_CORAL;  // orange
-  if (!strcmp(st, "dizzy")) return 0xA81F;  // purple
-  if (!strcmp(st, "idle")) return 0x2DEA;   // green (connected, ready)
-  return 0x4208;                            // asleep grey
+  if (!strcmp(st, "busy")) return C_CORAL;       // orange
+  if (!strcmp(st, "dizzy")) return 0xA81F;       // purple
+  if (!strcmp(st, "attention")) return 0xFD20;   // amber alert
+  if (!strcmp(st, "celebrate")) return 0x2DEA;   // green
+  if (!strcmp(st, "heart")) return 0xFB56;        // pink
+  if (!strcmp(st, "idle")) return 0x2DEA;        // green (connected, ready)
+  return 0x4208;                                 // asleep grey
 }
 static const char *stateLabel(const char *st) {
   if (!strcmp(st, "busy")) return "WORKING";
   if (!strcmp(st, "dizzy")) return "DIZZY";
+  if (!strcmp(st, "attention")) return "ATTENTION";
+  if (!strcmp(st, "celebrate")) return "DONE!";
+  if (!strcmp(st, "heart")) return "HELLO";
   if (!strcmp(st, "idle")) return "READY";
   return "ASLEEP";
 }
 
 // Compact token count: 1.2M / 123k / 45 (bare number; the cell label gives units).
-static void fmtTok(long t, char *out, size_t n) {
+static void fmtTok(long long t, char *out, size_t n) {
   if (t >= 1000000)
-    snprintf(out, n, "%ld.%ldM", t / 1000000, (t % 1000000) / 100000);
+    snprintf(out, n, "%lld.%lldM", t / 1000000, (t % 1000000) / 100000);
   else if (t >= 1000)
-    snprintf(out, n, "%ld.%ldk", t / 1000, (t % 1000) / 100);
+    snprintf(out, n, "%lld.%lldk", t / 1000, (t % 1000) / 100);
   else
-    snprintf(out, n, "%ld", t);
+    snprintf(out, n, "%lld", t);
 }
 
 static void fmtDur(uint32_t ms, char *out, size_t n) {
@@ -385,6 +400,22 @@ void loop() {
   uint32_t now = millis();
   net::server.loop();
   net::AppState &s = net::server.state();
+
+  // ---- transient hook effect (attention/celebrate/heart): edge-trigger once
+  //      per event; wakes the screen so a "needs you" / "done" isn't missed ----
+  static uint32_t lastFxId = 0;
+  if (s.fxId != lastFxId) {
+    lastFxId = s.fxId;
+    fxState = s.fx;
+    fxUntil = now + (s.fx == "attention" ? 5000UL : 3000UL);
+    forceRedraw = true;
+    if (!screenOn) {
+      screenOn = true;
+      display.backlight(true);
+      lastInteraction = now;
+      wasTouched = true; // this wake isn't a tap
+    }
+  }
 
   // Track the session's start (total 0->1 edge) every loop -- even while asleep,
   // so a session that begins during sleep stamps the real start, not wake time.

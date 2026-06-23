@@ -13,13 +13,17 @@ struct AppState {
   // latest session snapshot from the hook
   int total = 0, running = 0;
   String msg;
-  String project;      // current project (cwd basename)
-  long tokens = 0;     // tokens used today
-  long tokensAll = 0;  // tokens used all-time (cumulative)
-  int tools = 0;       // tool calls today
-  int turns = 0;       // assistant turns today
-  int sessions = 0;    // sessions today
-  bool dirty = true;   // renderer should repaint
+  String project;          // current project (cwd basename)
+  long tokens = 0;         // tokens used today
+  long long tokensAll = 0; // tokens used all-time (64-bit: won't wrap past ~2.1B)
+  int tools = 0;           // tool calls today
+  int turns = 0;           // assistant turns today
+  int sessions = 0;        // sessions today
+  // transient hook-driven effect (attention/celebrate/heart); fxId bumps once
+  // per effect event so the renderer can edge-trigger a short animation.
+  String fx;
+  uint32_t fxId = 0;
+  bool dirty = true;       // renderer should repaint
 };
 
 // WiFi (captive-portal provisioned) + HTTP server. Endpoints:

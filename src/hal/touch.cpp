@@ -84,13 +84,21 @@ bool Touch::read(int16_t &x, int16_t &y) {
 }
 
 // Wait for a press, average samples while held, then wait for release.
-static void captureStableTouch(int16_t &ox, int16_t &oy) {
-  while (!ts.touched())
+// Returns false on timeout so calibrate() can abort instead of hanging loop()
+// forever (the web server / hook endpoint / animation all stall while this
+// runs). delay() keeps feeding the idle task so no watchdog reset masks it.
+static bool captureStableTouch(int16_t &ox, int16_t &oy) {
+  const uint32_t WAIT_MS = 15000;
+  uint32_t t0 = millis();
+  while (!ts.touched()) {
+    if (millis() - t0 > WAIT_MS)
+      return false; // no tap arrived in time -> abort calibration
     delay(10);
+  }
   long sx = 0, sy = 0;
   int n = 0;
-  uint32_t t0 = millis();
-  while (millis() - t0 < 350) {
+  uint32_t tc = millis();
+  while (millis() - tc < 350) {
     if (ts.touched()) {
       TS_Point p = ts.getPoint();
       if (p.z >= 150) {
@@ -103,14 +111,30 @@ static void captureStableTouch(int16_t &ox, int16_t &oy) {
   }
   ox = n ? (int16_t)(sx / n) : 0;
   oy = n ? (int16_t)(sy / n) : 0;
-  while (ts.touched())
+  uint32_t tr = millis();
+  while (ts.touched()) {
+    if (millis() - tr > WAIT_MS)
+      break; // stuck/noisy contact -> stop waiting for release
     delay(10);
+  }
   delay(150);
+  return n > 0; // false if we never captured a solid sample
 }
 
 void Touch::calibrate(Display &disp) {
   TFT_eSPI &t = disp.tft();
   const int M = CAL_MARGIN;
+  // The tap that selected "Recalibrate" is likely still held; wait for it to
+  // release first (timeout-guarded) so it isn't captured as the first target.
+  {
+    uint32_t tr = millis();
+    while (ts.touched()) {
+      if (millis() - tr > 15000)
+        break;
+      delay(10);
+    }
+    delay(120);
+  }
   struct P {
     int sx, sy;
   } targets[3] = {{M, M}, {w_ - M, M}, {M, h_ - M}};
@@ -126,7 +150,8 @@ void Touch::calibrate(Display &disp) {
     t.drawLine(cx - 12, cy, cx + 12, cy, TFT_RED);
     t.drawLine(cx, cy - 12, cx, cy + 12, TFT_RED);
     t.drawCircle(cx, cy, 9, TFT_YELLOW);
-    captureStableTouch(raw[i][0], raw[i][1]);
+    if (!captureStableTouch(raw[i][0], raw[i][1]))
+      return; // timed out -> abort, keep the existing working calibration
     t.fillCircle(cx, cy, 7, TFT_GREEN);
     delay(350);
   }
