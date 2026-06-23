@@ -71,6 +71,8 @@ void Server::begin(std::function<void(const String &)> onPortal) {
   g_state.wifiUp = ok;
   if (ok) {
     WiFi.setAutoReconnect(true);
+    WiFi.setSleep(true); // modem power-save: radio naps between beacons; events
+                         // still arrive (a little extra latency), big idle save
     g_state.ip = WiFi.localIP().toString();
     if (MDNS.begin("claude-cyd"))
       MDNS.addService("http", "tcp", 80);

@@ -198,13 +198,54 @@ static void fmtDur(uint32_t ms, char *out, size_t n) {
              (unsigned long)((s % 3600) / 60));
 }
 
-// One stacked stat: a small muted label above a bold value, both centered at
-// cx. The value is clamped to maxW so a big number can't spill into its
-// neighbour. vfont/voff let token cells use a larger value font.
-static void statCol(int cx, int y, const char *label, const char *value,
-                    uint16_t vcol, const GFXfont *vfont, int voff, int maxW) {
-  gtext(label, cx, y, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
-  gtextClamp(value, cx, y + voff, vfont, vcol, C_CARD, TC_DATUM, maxW);
+// Animated (eased) copies of the live counters, so a value rolls toward its new
+// total like an odometer instead of snapping.
+static long long dToday = 0, dAll = 0;
+static int dTools = 0, dTurns = 0, dSess = 0;
+static uint32_t lastDurSec = 0xFFFFFFFF;
+
+static bool tickToward(long long &d, long long target) {
+  if (d == target) return false;
+  long long step = (target - d) / 4; // ease-out roll
+  if (step == 0) step = target > d ? 1 : -1;
+  d += step;
+  return true;
+}
+static bool tickTowardI(int &d, int target) {
+  if (d == target) return false;
+  int step = (target - d) / 4;
+  if (step == 0) step = target > d ? 1 : -1;
+  d += step;
+  return true;
+}
+
+// Clear + draw one centered value cell (used for the initial render and the
+// per-frame counter animation; cleared so a shrinking value leaves no ghost).
+static void drawCell(int cx, int y, const char *v, uint16_t col,
+                     const GFXfont *vf, int voff, int maxW) {
+  display.tft().fillRect(cx - maxW / 2, y + voff - 1, maxW, 20, C_CARD);
+  gtextClamp(v, cx, y + voff, vf, col, C_CARD, TC_DATUM, maxW);
+}
+
+// Draw the six value cells from the animated counters (labels are drawn once by
+// renderStatic). force=true redraws all (after a full card repaint); otherwise
+// only cells whose text changed are redrawn, so a settled value never flickers.
+static void drawStatValues(int W, int cy, bool force) {
+  static char pT[12], pA[12], pD[14], pNt[8], pNu[8], pNs[8];
+  char tok[12], all[12], dur[14], nt[8], nu[8], ns[8];
+  fmtTok(dToday, tok, sizeof(tok));
+  fmtTok(dAll, all, sizeof(all));
+  fmtDur(sessionStart ? (millis() - sessionStart) : 0, dur, sizeof(dur));
+  snprintf(nt, sizeof(nt), "%d", dTools);
+  snprintf(nu, sizeof(nu), "%d", dTurns);
+  snprintf(ns, sizeof(ns), "%d", dSess);
+  int yA = cy + 54, yB = cy + 96;
+  if (force || strcmp(tok, pT)) { strcpy(pT, tok); drawCell(W / 4, yA, tok, C_CORAL, &FreeSansBold12pt7b, 20, W / 2 - 24); }
+  if (force || strcmp(all, pA)) { strcpy(pA, all); drawCell(W * 3 / 4, yA, all, C_CORAL, &FreeSansBold12pt7b, 20, W / 2 - 24); }
+  if (force || strcmp(nt, pNt)) { strcpy(pNt, nt); drawCell(W / 8, yB, nt, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8); }
+  if (force || strcmp(nu, pNu)) { strcpy(pNu, nu); drawCell(W * 3 / 8, yB, nu, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8); }
+  if (force || strcmp(ns, pNs)) { strcpy(pNs, ns); drawCell(W * 5 / 8, yB, ns, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8); }
+  if (force || strcmp(dur, pD)) { strcpy(pD, dur); drawCell(W * 7 / 8, yB, dur, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8); }
 }
 
 // Card headline text: while busy, the device-rotated whimsy verb (synced to the
@@ -253,23 +294,17 @@ static void renderStatic(const char *st) {
              C_CARD, MC_DATUM, W - 32);
   t.drawFastHLine(20, cy + 40, W - 40, 0x2945); // divider (gap below the text)
 
-  // Two prominent token figures up top (each owns half the card, large font so
-  // big "M" counts read at a glance), then a row of four compact activity
-  // counts below. Every value is width-clamped so it can't run into a neighbour.
-  char tok[12], all[12], dur[14], nt[8], ns[8], nu[8];
-  fmtTok(s.tokens, tok, sizeof(tok));
-  fmtTok(s.tokensAll, all, sizeof(all));
-  fmtDur(sessionStart ? (millis() - sessionStart) : 0, dur, sizeof(dur));
-  snprintf(nt, sizeof(nt), "%d", s.tools);
-  snprintf(ns, sizeof(ns), "%d", s.sessions);
-  snprintf(nu, sizeof(nu), "%d", s.turns);
+  // Two prominent token figures up top (each owns half the card), then a row of
+  // four compact activity counts. Labels are drawn here once; the values below
+  // are animated counters (drawStatValues) that roll toward new totals.
   int yA = cy + 54, yB = cy + 96;
-  statCol(W / 4, yA, "Today", tok, C_CORAL, &FreeSansBold12pt7b, 20, W / 2 - 24);
-  statCol(W * 3 / 4, yA, "Total", all, C_CORAL, &FreeSansBold12pt7b, 20, W / 2 - 24);
-  statCol(W / 8, yB, "Tools", nt, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8);
-  statCol(W * 3 / 8, yB, "Turns", nu, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8);
-  statCol(W * 5 / 8, yB, "Sess", ns, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8);
-  statCol(W * 7 / 8, yB, "Time", dur, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8);
+  gtext("Today", W / 4, yA, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
+  gtext("Total", W * 3 / 4, yA, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
+  gtext("Tools", W / 8, yB, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
+  gtext("Turns", W * 3 / 8, yB, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
+  gtext("Sess", W * 5 / 8, yB, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
+  gtext("Time", W * 7 / 8, yB, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
+  drawStatValues(W, cy, true);
 }
 
 // full=true draws the whole panel; full=false only clears+redraws the value
@@ -423,6 +458,7 @@ void loop() {
     forceRedraw = true;
     if (!screenOn) {
       screenOn = true;
+      setCpuFrequencyMhz(240);
       display.backlight(true);
       lastInteraction = now;
       wasTouched = true; // this wake isn't a tap
@@ -447,6 +483,7 @@ void loop() {
   if (!screenOn) {
     if (touch.rawPressed() || s.running > 0) {
       screenOn = true;
+      setCpuFrequencyMhz(240); // full speed for smooth animation while visible
       display.backlight(true);
       lastInteraction = now;
       forceRedraw = true;
@@ -559,6 +596,8 @@ void loop() {
     screenOn = false;
     display.backlight(false);
     led.off();
+    setCpuFrequencyMhz(80); // drop the clock while the screen is dark (WiFi
+                            // keeps running so activity still wakes us)
   }
   if (!screenOn) {
     delay(8);
@@ -595,6 +634,26 @@ void loop() {
   if (now - ledT > 100) {
     ledT = now;
     driveLed(st, now);
+  }
+
+  // ---- roll the stat counters toward their live targets (odometer feel);
+  //      also re-tick the session timer once a second ----
+  static uint32_t lastRoll = 0;
+  if (now - lastRoll > 40) {
+    lastRoll = now;
+    bool ch = false;
+    ch |= tickToward(dToday, s.tokens);
+    ch |= tickToward(dAll, s.tokensAll);
+    ch |= tickTowardI(dTools, s.tools);
+    ch |= tickTowardI(dTurns, s.turns);
+    ch |= tickTowardI(dSess, s.sessions);
+    uint32_t durSec = sessionStart ? (now - sessionStart) / 1000 : 0;
+    if (durSec != lastDurSec) {
+      lastDurSec = durSec;
+      ch = true;
+    }
+    if (ch)
+      drawStatValues(display.tft().width(), REG_Y + REG_H + 4, false);
   }
   delay(2);
 }
