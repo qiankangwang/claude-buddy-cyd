@@ -19,8 +19,11 @@ struct AppState {
   int tools = 0;           // tool calls today
   int turns = 0;           // assistant turns today
   int sessions = 0;        // sessions today
-  // transient hook-driven effect (attention/celebrate/heart); fxId bumps once
-  // per effect event so the renderer can edge-trigger a short animation.
+  // sticky per-activity clip while running (typing/building/thinking/juggling…)
+  // chosen by the hook from the live tool; empty -> the random busy carousel.
+  String act;
+  // transient hook-driven effect (attention/celebrate/heart/error/notification);
+  // fxId bumps once per effect event so the renderer edge-triggers a short anim.
   String fx;
   uint32_t fxId = 0;
   bool dirty = true;       // renderer should repaint
