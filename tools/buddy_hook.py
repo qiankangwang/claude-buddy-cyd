@@ -47,8 +47,18 @@ def _project(data):
 
 
 def _scan_transcript(path):
-    """One pass over a session log: sum tokens, count tool_use blocks + turns."""
-    tok = tools = turns = 0
+    """One pass over a session log -> {tok, tools, turns}.
+
+    Two correctness points learned from real transcripts:
+    * The same assistant message id is re-logged several times (streaming /
+      updates). Counting every line double-counts tokens, turns and tools (~2x),
+      so we dedupe by message id and keep the last occurrence.
+    * tokens = input + output + cache_creation. We deliberately EXCLUDE
+      cache_read_input_tokens: that's the cached context re-read on every turn
+      and on a long session it's >95% of the raw total, which balloons the count
+      without reflecting real usage."""
+    seen = {}  # message id -> {tok, tools} (last occurrence wins)
+    extra_tok = extra_tools = extra_turns = 0  # assistant msgs lacking an id
     try:
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -59,27 +69,37 @@ def _scan_transcript(path):
                     o = json.loads(line)
                 except Exception:
                     continue
+                if o.get("type") != "assistant":
+                    continue
                 msg = o.get("message") or {}
                 if not isinstance(msg, dict):
                     msg = {}
                 u = msg.get("usage")
+                tok = 0
                 if isinstance(u, dict):
-                    tok += int(u.get("input_tokens", 0) or 0)
-                    tok += int(u.get("output_tokens", 0) or 0)
-                    # cache reads/writes are the bulk of real usage on long
-                    # sessions; omitting them undercounts by ~90%.
-                    tok += int(u.get("cache_creation_input_tokens", 0) or 0)
-                    tok += int(u.get("cache_read_input_tokens", 0) or 0)
-                if o.get("type") == "assistant":
-                    turns += 1
-                    content = msg.get("content")
-                    if isinstance(content, list):
-                        for b in content:
-                            if isinstance(b, dict) and b.get("type") == "tool_use":
-                                tools += 1
+                    tok = (int(u.get("input_tokens", 0) or 0)
+                           + int(u.get("output_tokens", 0) or 0)
+                           + int(u.get("cache_creation_input_tokens", 0) or 0))
+                tools = 0
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for b in content:
+                        if isinstance(b, dict) and b.get("type") == "tool_use":
+                            tools += 1
+                mid = msg.get("id")
+                if mid:
+                    seen[mid] = {"tok": tok, "tools": tools}
+                else:
+                    extra_tok += tok
+                    extra_tools += tools
+                    extra_turns += 1
     except Exception:
         return None
-    return {"tok": tok, "tools": tools, "turns": turns}
+    return {
+        "tok": sum(r["tok"] for r in seen.values()) + extra_tok,
+        "tools": sum(r["tools"] for r in seen.values()) + extra_tools,
+        "turns": len(seen) + extra_turns,
+    }
 
 
 def _today_stats(data):
