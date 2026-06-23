@@ -32,8 +32,11 @@ static String fxState;
 static uint32_t lastInteraction = 0;
 static uint32_t sessionStart = 0; // millis when the current Claude session began
 static bool screenOn = true, forceRedraw = false, wasTouched = false, haveChar = false;
-// triple-tap detection (shift register of the last 3 tap times)
-static uint32_t tapTimes[3] = {0, 0, 0};
+// triple-tap detection: count taps that arrive in quick succession; any gap
+// longer than TAP_GAP_MS restarts the count, so it's a real fast triple-tap.
+static uint32_t lastTap = 0;
+static int tapCount = 0;
+#define TAP_GAP_MS 400
 
 // rotating "busy" verb, advanced in sync with the character animation loop
 static const char *WHIMSY[] = {
@@ -458,7 +461,6 @@ void loop() {
     forceRedraw = true;
     if (!screenOn) {
       screenOn = true;
-      setCpuFrequencyMhz(240);
       display.backlight(true);
       lastInteraction = now;
       wasTouched = true; // this wake isn't a tap
@@ -483,7 +485,6 @@ void loop() {
   if (!screenOn) {
     if (touch.rawPressed() || s.running > 0) {
       screenOn = true;
-      setCpuFrequencyMhz(240); // full speed for smooth animation while visible
       display.backlight(true);
       lastInteraction = now;
       forceRedraw = true;
@@ -575,15 +576,14 @@ void loop() {
     return;
   }
 
-  // ---- normal tap: triple-tap anywhere -> dizzy easter egg ----
+  // ---- normal tap: a real triple-tap (3 quick taps) -> dizzy easter egg ----
   if (tap) {
     lastInteraction = now;
-    tapTimes[0] = tapTimes[1];
-    tapTimes[1] = tapTimes[2];
-    tapTimes[2] = now;
-    if (tapTimes[0] != 0 && tapTimes[2] - tapTimes[0] < 900) {
+    tapCount = (now - lastTap < TAP_GAP_MS) ? tapCount + 1 : 1;
+    lastTap = now;
+    if (tapCount >= 3) {
       dizzyUntil = now + 2200;
-      tapTimes[0] = tapTimes[1] = tapTimes[2] = 0;
+      tapCount = 0;
     }
   }
   wasTouched = t;
@@ -596,8 +596,6 @@ void loop() {
     screenOn = false;
     display.backlight(false);
     led.off();
-    setCpuFrequencyMhz(80); // drop the clock while the screen is dark (WiFi
-                            // keeps running so activity still wakes us)
   }
   if (!screenOn) {
     delay(8);
