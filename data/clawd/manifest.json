@@ -25,6 +25,16 @@
     "attention": "attention.gif",
     "celebrate": "celebrate.gif",
     "dizzy": "dizzy.gif",
-    "heart": "heart.gif"
+    "heart": "heart.gif",
+    "thinking": "busy_0.gif",
+    "typing": "busy_1.gif",
+    "building": "busy_2.gif",
+    "sweeping": "busy_6.gif",
+    "juggling": "busy_8.gif",
+    "groove": "busy_9.gif",
+    "carrying": "busy_10.gif",
+    "debugger": "busy_11.gif",
+    "error": "dizzy.gif",
+    "notification": "attention.gif"
   }
 }

@@ -47,6 +47,9 @@ static void handleEvent() {
   s.tools = doc["tools"] | s.tools;
   s.turns = doc["turns"] | s.turns;
   s.sessions = doc["sessions"] | s.sessions;
+  // sticky per-activity clip name (typing/building/...) for the running state.
+  if (doc["act"].is<const char *>())
+    s.act = (const char *)doc["act"];
   // optional transient effect (attention/celebrate/heart): bump fxId so the
   // renderer fires it exactly once.
   if (doc["fx"].is<const char *>()) {
