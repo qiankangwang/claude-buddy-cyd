@@ -176,12 +176,15 @@ static const char *stateLabel(const char *st) {
 
 // Compact token count: 1.2M / 123k / 45 (bare number; the cell label gives units).
 static void fmtTok(long long t, char *out, size_t n) {
-  if (t >= 1000000)
-    snprintf(out, n, "%lld.%lldM", t / 1000000, (t % 1000000) / 100000);
-  else if (t >= 1000)
-    snprintf(out, n, "%lld.%lldk", t / 1000, (t % 1000) / 100);
-  else
+  if (t >= 1000000) {
+    long long x = (t + 50000) / 100000; // tenths of a million, rounded
+    snprintf(out, n, "%lld.%lldM", x / 10, x % 10);
+  } else if (t >= 1000) {
+    long long x = (t + 50) / 100; // tenths of a thousand, rounded
+    snprintf(out, n, "%lld.%lldk", x / 10, x % 10);
+  } else {
     snprintf(out, n, "%lld", t);
+  }
 }
 
 static void fmtDur(uint32_t ms, char *out, size_t n) {
@@ -196,11 +199,12 @@ static void fmtDur(uint32_t ms, char *out, size_t n) {
 }
 
 // One stacked stat: a small muted label above a bold value, both centered at
-// cx. The value owns a full column, so numbers are never truncated.
+// cx. The value is clamped to maxW so a big number can't spill into its
+// neighbour. vfont/voff let token cells use a larger value font.
 static void statCol(int cx, int y, const char *label, const char *value,
-                    uint16_t vcol) {
+                    uint16_t vcol, const GFXfont *vfont, int voff, int maxW) {
   gtext(label, cx, y, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
-  gtext(value, cx, y + 15, &FreeSansBold9pt7b, vcol, C_CARD, TC_DATUM);
+  gtextClamp(value, cx, y + voff, vfont, vcol, C_CARD, TC_DATUM, maxW);
 }
 
 // Card headline text: while busy, the device-rotated whimsy verb (synced to the
@@ -249,7 +253,9 @@ static void renderStatic(const char *st) {
              C_CARD, MC_DATUM, W - 32);
   t.drawFastHLine(20, cy + 40, W - 40, 0x2945); // divider (gap below the text)
 
-  // 3x2 stacked grid: each value owns a ~80px column -> no ellipsis on numbers.
+  // Two prominent token figures up top (each owns half the card, large font so
+  // big "M" counts read at a glance), then a row of four compact activity
+  // counts below. Every value is width-clamped so it can't run into a neighbour.
   char tok[12], all[12], dur[14], nt[8], ns[8], nu[8];
   fmtTok(s.tokens, tok, sizeof(tok));
   fmtTok(s.tokensAll, all, sizeof(all));
@@ -257,27 +263,35 @@ static void renderStatic(const char *st) {
   snprintf(nt, sizeof(nt), "%d", s.tools);
   snprintf(ns, sizeof(ns), "%d", s.sessions);
   snprintf(nu, sizeof(nu), "%d", s.turns);
-  int c1 = 40, c2 = 120, c3 = 200, yA = cy + 46, yB = cy + 90;
-  statCol(c1, yA, "Today", tok, C_CORAL);
-  statCol(c2, yA, "Total", all, C_CORAL);
-  statCol(c3, yA, "Tools", nt, C_TEXT);
-  statCol(c1, yB, "Sess", ns, C_TEXT);
-  statCol(c2, yB, "Turns", nu, C_TEXT);
-  statCol(c3, yB, "Time", dur, C_TEXT);
+  int yA = cy + 54, yB = cy + 96;
+  statCol(W / 4, yA, "Today", tok, C_CORAL, &FreeSansBold12pt7b, 20, W / 2 - 24);
+  statCol(W * 3 / 4, yA, "Total", all, C_CORAL, &FreeSansBold12pt7b, 20, W / 2 - 24);
+  statCol(W / 8, yB, "Tools", nt, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8);
+  statCol(W * 3 / 8, yB, "Turns", nu, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8);
+  statCol(W * 5 / 8, yB, "Sess", ns, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8);
+  statCol(W * 7 / 8, yB, "Time", dur, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8);
 }
 
-static void renderStats() {
+// full=true draws the whole panel; full=false only clears+redraws the value
+// cells (labels stay) so the panel can live-update without a full-screen flash.
+static void renderStats(bool full) {
   TFT_eSPI &t = display.tft();
   net::AppState &s = net::server.state();
   int W = t.width();
-  t.fillScreen(TFT_BLACK);
-  gtext("Stats", W / 2, 16, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK, TC_DATUM);
+  if (full) {
+    t.fillScreen(TFT_BLACK);
+    gtext("Stats", W / 2, 16, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK, TC_DATUM);
+    gtext("tap to close", W / 2, 310, &FreeSans9pt7b, C_MUTED, TFT_BLACK,
+          BC_DATUM);
+  }
   // label left, value right-aligned to the screen edge and clamped so long
   // values (IP / project / big token counts) can't run off the right side.
-  int lx = 18, rx = W - 18, y = 60, dy = 24, vMax = W - 18 - 96;
+  int lx = 18, rx = W - 18, y = 60, dy = 24, vMax = W - 18 - 108;
   char b[24];
   auto row = [&](const char *k, const String &v) {
-    gtext(k, lx, y, &FreeSans9pt7b, C_MUTED, TFT_BLACK, TL_DATUM);
+    t.fillRect(104, y - 13, W - 104 - 6, 20, TFT_BLACK); // clear value cell only
+    if (full)
+      gtext(k, lx, y, &FreeSans9pt7b, C_MUTED, TFT_BLACK, TL_DATUM);
     gtextClamp(v.c_str(), rx, y, &FreeSansBold9pt7b, C_TEXT, TFT_BLACK,
                TR_DATUM, vMax);
     y += dy;
@@ -297,8 +311,6 @@ static void renderStats() {
   snprintf(b, sizeof(b), "%u KB", (unsigned)(ESP.getFreeHeap() / 1024));
   row("Free heap", String(b));
   row("IP", s.ip);
-  gtext("tap to close", W / 2, 310, &FreeSans9pt7b, C_MUTED, TFT_BLACK,
-        BC_DATUM);
 }
 
 static void renderSettings() {
@@ -335,7 +347,7 @@ static void handleSettingsTap(int x, int y) {
     if (i == 0) { // open the stats panel
       settingsOpen = false;
       statsOpen = true;
-      renderStats();
+      renderStats(true);
     } else if (i == 1) { // recalibrate touch (shows visible targets)
       settingsOpen = false;
       touch.calibrate(display);
@@ -474,12 +486,18 @@ void loop() {
     return;
   }
 
-  // ---- stats panel mode (tap anywhere to close) ----
+  // ---- stats panel mode (tap anywhere to close; live-refresh values ~1s) ----
   if (statsOpen) {
     if (tap) {
       statsOpen = false;
       forceRedraw = true;
       lastInteraction = now;
+    } else {
+      static uint32_t lastStatsRefresh = 0;
+      if (now - lastStatsRefresh > 1000) {
+        lastStatsRefresh = now;
+        renderStats(false); // redraw only the value cells (session timer, heap…)
+      }
     }
     wasTouched = t;
     delay(5);
