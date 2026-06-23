@@ -4,3 +4,7 @@ build/
 *.bin
 __pycache__/
 *.pyc
+# local scratch / WIP for the animation pipeline (never publish — public repo)
+.scratch-busy/
+# stray scratch images dropped at the repo root
+/*.png
