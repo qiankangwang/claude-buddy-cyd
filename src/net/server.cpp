@@ -43,10 +43,17 @@ static void handleEvent() {
   if (doc["project"].is<const char *>())
     s.project = (const char *)doc["project"];
   s.tokens = doc["tokens"] | s.tokens;
-  s.tokensAll = doc["tokensAll"] | s.tokensAll;
+  s.tokensAll = doc["tokensAll"] | (long long)s.tokensAll;
   s.tools = doc["tools"] | s.tools;
   s.turns = doc["turns"] | s.turns;
   s.sessions = doc["sessions"] | s.sessions;
+  // optional transient effect (attention/celebrate/heart): bump fxId so the
+  // renderer fires it exactly once.
+  if (doc["fx"].is<const char *>()) {
+    s.fx = (const char *)doc["fx"];
+    if (s.fx.length())
+      s.fxId++;
+  }
   s.dirty = true;
   http.send(200, "application/json", "{\"ok\":true}");
 }
@@ -81,6 +88,27 @@ void Server::begin(std::function<void(const String &)> onPortal) {
 void Server::loop() {
   if (g_state.wifiUp)
     http.handleClient();
+  // Keep link state + IP live: WiFi can drop/reconnect or renew its DHCP lease
+  // after boot. Without this, wifiUp/ip stay latched at their boot values, so
+  // the device shows a green "READY" link while offline and may report a stale
+  // IP. (The HTTP server was begun at boot; handleClient resumes on reconnect.)
+  static uint32_t lastChk = 0;
+  uint32_t now = millis();
+  if (now - lastChk > 2000) {
+    lastChk = now;
+    bool up = (WiFi.status() == WL_CONNECTED);
+    if (up != g_state.wifiUp) {
+      g_state.wifiUp = up;
+      g_state.dirty = true;
+    }
+    if (up) {
+      String ip = WiFi.localIP().toString();
+      if (ip != g_state.ip) {
+        g_state.ip = ip;
+        g_state.dirty = true;
+      }
+    }
+  }
 }
 
 AppState &Server::state() { return g_state; }
