@@ -47,6 +47,8 @@ static std::map<String, std::vector<String>> g_states;
 static String g_packDir;
 static String g_cur;
 static int g_idx = 0;
+static int g_hist[2] = {-1, -1}; // recent clip indices, so a clip can't recur
+                                 // until at least two others have played
 static bool g_open = false;
 
 // per-open draw geometry (set after the canvas size is known).
@@ -245,6 +247,8 @@ void Character::setState(const char *state) {
     return;
   g_cur = state;
   g_idx = 0;
+  g_hist[0] = 0; // current clip; nothing before it yet
+  g_hist[1] = -1;
   g_lastSwitch = millis(); // restart the clip-switch timer for the new state
   if (g_open) {
     gif.close();
@@ -273,9 +277,16 @@ void Character::update() {
     // without slowing playback or freezing.
     if (multi && now - g_lastSwitch >= SWITCH_INTERVAL_MS) {
       int sz = (int)it->second.size();
+      int k = (sz - 1 < 2) ? (sz - 1) : 2; // # of recent clips to keep avoiding
       int nxt = g_idx;
-      while (nxt == g_idx) // pick a random clip, never the same one twice
+      for (int guard = 0; guard < 64; guard++) {
         nxt = (int)(esp_random() % (uint32_t)sz);
+        bool bad = (nxt == g_hist[0]) || (k >= 2 && nxt == g_hist[1]);
+        if (!bad)
+          break;
+      }
+      g_hist[1] = g_hist[0]; // a clip now can't recur until 2 others have shown
+      g_hist[0] = nxt;
       g_idx = nxt;
       g_lastSwitch = now;
       g_loops++; // sync signal: the clip just switched
