@@ -1,4 +1,4 @@
-# Claude Buddy
+# CYD Claude Buddy
 
 <p align="center">
   <img src="assets/ready.gif" width="116" alt="ready">
@@ -9,16 +9,15 @@
 </p>
 <p align="center"><sub>ready&nbsp;·&nbsp;working&nbsp;·&nbsp;celebrate&nbsp;·&nbsp;dizzy&nbsp;·&nbsp;heart</sub></p>
 
-A desk companion for Claude Code: the orange **Clawd** mascot on a small **ESP32
-TFT display** that mirrors your live Claude Code activity and usage stats —
-driven entirely by Claude Code hooks over plain WiFi, with **no Bluetooth and no
-always-on PC process**.
+A desk companion for Claude Code: the orange **Clawd** mascot on a **Cheap
+Yellow Display** (ESP32) that mirrors your live Claude Code activity and usage
+stats — driven entirely by Claude Code hooks over plain WiFi, with **no
+Bluetooth and no always-on PC process**.
 
-The reference build targets the **Cheap Yellow Display (CYD)** because it's the
-cheapest all-in-one ESP32+screen+touch board, but nothing in the app is
-CYD-specific: the firmware is a thin HAL over `TFT_eSPI`, so it ports to other
-ESP32 + TFT panels with a few config changes — see
-[Porting](#porting-to-other-boards).
+Built for the **CYD** — the cheapest all-in-one ESP32 + screen + touch board.
+The app sits on a thin HAL over `TFT_eSPI`, so it can also be adapted to other
+ESP32 + TFT panels if you want — see [Adapting to other
+boards](#adapting-to-other-boards).
 
 Clawd reacts to what Claude is doing (sleeping / ready / working) while a stats
 card tracks your usage: tokens today and all-time, tool calls, sessions, turns,
@@ -67,11 +66,12 @@ Claude Code (PC)  --hook-->  buddy_hook.py  --HTTP / LAN-->  device
   ST7789 (feeding it the ST7789 driver gives a white screen).
 - Resistive touch (XPT2046), onboard RGB LED, CH340 USB-serial.
 
-### Porting to other boards
+### Adapting to other boards
 
-The firmware is a thin HAL (`src/hal/`: display, touch, led, storage) over
-`TFT_eSPI`, and everything above it — networking, hooks, stats, the GIF
-character system — is hardware-independent. To run it on another ESP32 + TFT:
+CYD is the target, but the firmware is a thin HAL (`src/hal/`: display, touch,
+led, storage) over `TFT_eSPI`, and everything above it — networking, hooks,
+stats, the GIF character system — is hardware-independent. So if you'd rather
+run it on another ESP32 + TFT:
 
 - **Display:** set the matching `*_DRIVER` flag and pins in `platformio.ini`
   (`TFT_eSPI` supports ILI9341 / ST7789 / ST7735 / ILI9488 / …). The character
