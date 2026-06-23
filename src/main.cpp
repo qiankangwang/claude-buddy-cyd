@@ -426,6 +426,8 @@ void loop() {
       display.backlight(true);
       lastInteraction = now;
       wasTouched = true; // this wake isn't a tap
+      pressStart = now;
+      longFired = true;  // don't let a coincident touch fire a long-press
     }
   }
 
@@ -449,6 +451,8 @@ void loop() {
       lastInteraction = now;
       forceRedraw = true;
       wasTouched = true; // consume this contact, don't fire a tap
+      pressStart = now;  // reset the hold timer so the held wake-touch isn't
+      longFired = true;  // mistaken for a long-press (was popping open Settings)
     } else {
       wasTouched = false;
       delay(10);
