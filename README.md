@@ -98,11 +98,5 @@ platformio.ini  build configuration
 ## License & credits
 
 - **Code:** MIT — see [LICENSE](LICENSE).
-- **Clawd character art** (`data/clawd/`): © 2026 Anthropic, PBC, used under MIT,
-  from [TaoXieSZ/claude-code-buddy](https://github.com/TaoXieSZ/claude-code-buddy)
-  with sprite art credited to
-  [rullerzhou-afk/clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk).
-- **Concept & protocol reference:**
-  [anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy) (MIT).
-- **CYD pinout / configuration:**
-  [witnessmenow/ESP32-Cheap-Yellow-Display](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display).
+- Based on **[anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy)** (MIT) — the original Claude buddy this project ports, for both concept and event protocol.
+- With thanks also to [TaoXieSZ/claude-code-buddy](https://github.com/TaoXieSZ/claude-code-buddy) and [rullerzhou-afk/clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk) for the Clawd art (`data/clawd/`, © 2026 Anthropic, PBC, used under MIT), and [witnessmenow/ESP32-Cheap-Yellow-Display](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display) for CYD pinout notes.
