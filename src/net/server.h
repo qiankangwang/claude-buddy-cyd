@@ -22,6 +22,9 @@ struct AppState {
   // sticky per-activity clip while running (typing/building/thinking/juggling…)
   // chosen by the hook from the live tool; empty -> the random busy carousel.
   String act;
+  // bumps on every hook event, so the renderer can switch the running clip in
+  // lock-step with Claude's actions (not just a free-running timer).
+  uint32_t actSeq = 0;
   // transient hook-driven effect (attention/celebrate/heart/error/notification);
   // fxId bumps once per effect event so the renderer edge-triggers a short anim.
   String fx;
