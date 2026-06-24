@@ -89,6 +89,11 @@ static int intensity = 0;
 static uint32_t waitStart = 0;     // millis the current wait began (0 = none)
 static uint32_t lastWaitId = 0;    // edge-detect a fresh wait from the hook
 static uint32_t lastNudgeWake = 0; // throttle escalated screen wakes
+// "Got it": the user can tap to acknowledge the current "your turn" episode
+// without going back to Claude. Calms the LED to a slow steady pulse and stops
+// any further screen-wake nudges. Bound to the wait episode: a fresh wait (new
+// waitId) re-arms the full escalation.
+static bool waitAcked = false;
 // Idle micro-behaviour: gently rotate a friendly line while standing by.
 static const char *IDLE_MSGS[] = {"Ready when you are", "All caught up",
                                   "Standing by", "At your service",
@@ -107,6 +112,7 @@ struct Rect {
   int x, y, w, h;
 };
 static Rect denyBtn, approveBtn;
+static Rect ackBtn; // "Got it" pill on the needs-you screen (calms the nudge)
 // Settings: Stats / Quiet / Brightness / Recalibrate / WiFi / Power off / Close
 static Rect setBtns[7];
 
@@ -118,6 +124,9 @@ static void computeButtons() {
   int sy = 46, sbh = 32, gap = 6; // 7 rows fit 240x320 (46 + 7*38 = 312)
   for (int i = 0; i < 7; i++)
     setBtns[i] = {20, sy + i * (sbh + gap), W - 40, sbh};
+  // "Got it" pill: centred, sitting just above the stats card on the home screen
+  int aw = 132, ah = 36;
+  ackBtn = {(W - aw) / 2, REG_Y + REG_H - ah - 8, aw, ah};
 }
 
 static bool inRect(const Rect &r, int x, int y) {
@@ -244,7 +253,11 @@ static void driveLed(const char *st, uint32_t now) {
   if (!strcmp(st, "attention") || !strcmp(st, "notification")) {
     r = g = true; // amber alert
     uint32_t waited = waitStart ? now - waitStart : 0;
-    if (waited > 45000) {
+    if (waitAcked) {
+      period = 2600;
+      onMs = 220;
+    } // acknowledged: calm slow pulse, no escalation
+    else if (waited > 45000) {
       period = 240;
       onMs = 120;
     } // urgent
@@ -256,10 +269,10 @@ static void driveLed(const char *st, uint32_t now) {
       period = 1500;
       onMs = 850;
     } // gentle breath
-  } else if (!strcmp(st, "error")) {
+  } else if (!strcmp(st, "error") || !strcmp(st, "limit")) {
     r = true;
     period = 360;
-    onMs = 180; // red blink
+    onMs = 180; // red blink (tool error / usage limit)
   } else if (!strcmp(st, "dizzy") || !strcmp(st, "heart")) {
     r = b = true; // magenta
   } else if (!strcmp(st, "celebrate")) {
@@ -295,6 +308,7 @@ static uint16_t stateColor(const char *st) {
   if (isWork(st)) return C_CORAL;                // orange (working)
   if (!strcmp(st, "dizzy")) return 0xA81F;       // purple
   if (!strcmp(st, "attention") || !strcmp(st, "notification")) return 0xFD20; // amber alert
+  if (!strcmp(st, "limit")) return C_NO;         // usage limit -> red
   if (!strcmp(st, "error")) return 0xC1C5;       // muted red
   if (!strcmp(st, "celebrate")) return 0x2DEA;   // green
   if (!strcmp(st, "heart")) return 0xFB56;        // pink
@@ -305,6 +319,7 @@ static const char *stateLabel(const char *st) {
   if (isWork(st)) return "WORKING";
   if (!strcmp(st, "dizzy")) return "DIZZY";
   if (!strcmp(st, "attention") || !strcmp(st, "notification")) return "NEEDS YOU";
+  if (!strcmp(st, "limit")) return "LIMIT";
   if (!strcmp(st, "error")) return "OOPS";
   if (!strcmp(st, "celebrate")) return "DONE!";
   if (!strcmp(st, "heart")) return "HELLO";
@@ -413,6 +428,30 @@ static void drawBudgetBar(int W, int cy) {
     t.fillRoundRect(bx, by, fw, bh, 2, col);
 }
 
+// Rolling-5h usage-limit gauge for the home card: a fuel bar that DEPLETES as
+// you spend against the configured 5h cap (buddy.json "limit5h"), with a "~NN%"
+// remaining label. This is an APPROXIMATE estimate from token counts, not
+// Anthropic's real plan metering, hence the "~". green plenty -> amber low ->
+// red nearly out. Takes priority over the daily-budget bar when both are set.
+static void drawQuotaBar(int W, int cy) {
+  net::AppState &s = net::server.state();
+  TFT_eSPI &t = display.tft();
+  double used = s.limit5h > 0 ? (double)s.tok5h / (double)s.limit5h : 0;
+  if (used < 0) used = 0;
+  if (used > 1) used = 1;
+  double left = 1.0 - used;
+  uint16_t col = left <= 0.10 ? C_NO : (left <= 0.30 ? 0xFD20 : C_OK);
+  int by = cy + 38, bh = 6, bx = 20, bw = W - 40 - 52; // room for the label
+  t.fillRoundRect(bx, by, bw, bh, 3, 0x2945);          // track (spent portion)
+  int fw = (int)(bw * left);
+  if (fw > 0)
+    t.fillRoundRect(bx, by, fw, bh, 3, col); // remaining
+  char lab[12];
+  snprintf(lab, sizeof(lab), "~%d%%", (int)(left * 100 + 0.5));
+  t.fillRect(W - 70, by - 5, 62, 16, C_CARD); // clear stale label digits
+  gtext(lab, W - 18, by + bh / 2, &FreeSansBold9pt7b, col, C_CARD, MR_DATUM);
+}
+
 // Card headline text: while busy, the device-rotated whimsy verb (synced to the
 // animation); otherwise the hook activity msg, else project, else name.
 static const char *headlineText(const char *st) {
@@ -427,6 +466,8 @@ static const char *headlineText(const char *st) {
   if (!strcmp(st, "celebrate")) return "Nice work!";
   if (!strcmp(st, "heart")) return "Hello!";
   if (!strcmp(st, "error")) return "Oops...";
+  if (!strcmp(st, "limit"))
+    return s.msg.length() ? s.msg.c_str() : "Usage limit reached";
   if (!strcmp(st, "attention") || !strcmp(st, "notification"))
     return "Needs you";
   if (!strcmp(st, "idle")) // standing by -> a gently rotating friendly line
@@ -470,7 +511,9 @@ static void renderStatic(const char *st) {
   // headline (verb when busy, else activity/project) -- shared with renderHeadline
   gtextClamp(headlineText(st), W / 2, cy + 18, &FreeSansBold12pt7b, C_TEXT,
              C_CARD, MC_DATUM, W - 32);
-  if (s.budget > 0)
+  if (s.limit5h > 0)
+    drawQuotaBar(W, cy); // rolling-5h usage-limit gauge (takes priority)
+  else if (s.budget > 0)
     drawBudgetBar(W, cy); // divider doubles as the daily-budget gauge
   else
     t.drawFastHLine(20, cy + 40, W - 40, 0x2945); // plain divider
@@ -707,7 +750,8 @@ void loop() {
   if (s.fxId != lastFxId) {
     lastFxId = s.fxId;
     fxState = s.fx;
-    fxUntil = now + (s.fx == "attention" ? 5000UL : 3000UL);
+    fxUntil = now + (s.fx == "limit" ? 20000UL
+                                     : (s.fx == "attention" ? 5000UL : 3000UL));
     forceRedraw = true;
     if (!screenOn && !autoWakeBlocked()) { // DND: react silently, don't wake
       screenOn = true;
@@ -746,6 +790,7 @@ void loop() {
   if (s.waitId != lastWaitId) {
     lastWaitId = s.waitId;
     waitStart = now;
+    waitAcked = false; // a fresh "your turn" re-arms the full nudge
   }
   if (!s.waiting)
     waitStart = 0;
@@ -782,7 +827,7 @@ void loop() {
   // ---- asleep: a touch, Claude starting work, or an escalated "your turn"
   //      nudge wakes us (once per wait, unless DND); else stay dark ----
   if (!screenOn) {
-    bool nudgeWake = s.waiting && !autoWakeBlocked() && waitStart &&
+    bool nudgeWake = s.waiting && !autoWakeBlocked() && !waitAcked && waitStart &&
                      (now - waitStart > 45000) && (lastNudgeWake < waitStart);
     if (touch.rawPressed() || s.running > 0 || nudgeWake) {
       if (nudgeWake)
@@ -913,6 +958,20 @@ void loop() {
     return;
   }
 
+  // ---- "Got it": tap the pill on the needs-you screen to acknowledge this
+  //      episode (calm the LED, stop further nudges) without replying to Claude
+  if (tap && !waitAcked && inRect(ackBtn, tx, ty)) {
+    const char *tst = stateName(now);
+    if (!strcmp(tst, "attention") || !strcmp(tst, "notification")) {
+      waitAcked = true;
+      lastInteraction = now;
+      forceRedraw = true; // repaint: drop the pill, settle to the calm indicator
+      wasTouched = t;
+      delay(5);
+      return; // consume the tap (don't also count it toward the dizzy triple-tap)
+    }
+  }
+
   // ---- normal tap: a real triple-tap (3 quick taps) -> dizzy easter egg ----
   if (tap) {
     lastInteraction = now;
@@ -966,7 +1025,8 @@ void loop() {
     last = st;
     renderStatic(st);
     if (haveChar) {
-      render::character.setState(st);
+      // "limit" has no clip of its own -> borrow the amber attention pose
+      render::character.setState(!strcmp(st, "limit") ? "attention" : st);
       lastLoops = render::character.loops(); // sync so it ticks on next switch
     }
   } else if (s.dirty) {
@@ -975,6 +1035,12 @@ void loop() {
   }
   if (haveChar)
     render::character.update();
+
+  // ---- "Got it" pill: overlay the lower character region while a turn is
+  //      waiting and unacknowledged. Redrawn each loop since the animation
+  //      repaints behind it; disappears once acknowledged (calm indicator stays).
+  if ((!strcmp(st, "attention") || !strcmp(st, "notification")) && !waitAcked)
+    drawButton(ackBtn, "Got it", C_OK);
 
   // ---- session-intensity tier -> clip speed/tint + top-bar pips ----
   int tier = isWork(st) ? intensityTier(s.burst, s.agents) : 0;
@@ -1047,7 +1113,9 @@ void loop() {
     if (ch) {
       int W = display.tft().width();
       drawStatValues(W, REG_Y + REG_H + 4, false);
-      if (s.budget > 0)
+      if (s.limit5h > 0)
+        drawQuotaBar(W, REG_Y + REG_H + 4); // refresh the quota gauge alongside
+      else if (s.budget > 0)
         drawBudgetBar(W, REG_Y + REG_H + 4); // ease the gauge with the counter
     }
   }

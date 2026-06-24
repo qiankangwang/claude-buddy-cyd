@@ -67,6 +67,9 @@ static void handleEvent() {
   s.agents = doc["agents"] | 0;
   if (doc["budget"].is<long>() || doc["budget"].is<int>())
     s.budget = doc["budget"] | s.budget; // sticky once provided
+  if (doc["limit5h"].is<long>() || doc["limit5h"].is<int>())
+    s.limit5h = doc["limit5h"] | s.limit5h; // sticky once provided
+  s.tok5h = doc["tok5h"] | s.tok5h; // rolling ~5h estimate, refreshed each event
   s.actSeq++; // every event ticks this -> renderer switches clip in lock-step
   s.dirty = true;
   http.send(200, "application/json", "{\"ok\":true}");
