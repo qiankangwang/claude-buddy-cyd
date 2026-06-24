@@ -53,6 +53,8 @@ static uint32_t lastLoops = 0;
 static bool settingsOpen = false;
 static bool statsOpen = false;
 static bool wifiConfirmOpen = false;
+static bool askOpen = false;       // on-device "Allow this tool?" prompt
+static uint32_t askShownAt = 0;    // for the auto-dismiss timeout
 static uint32_t pressStart = 0;
 static bool longFired = false;
 
@@ -283,6 +285,14 @@ static const char *headlineText(const char *st) {
     return WHIMSY[verbIdx];
   if (isWork(st)) // tool-specific activity -> its own verb
     return actVerb(st);
+  // transient / reaction states get their own word so the headline always
+  // matches the animation above it (not a stale activity message)
+  if (!strcmp(st, "dizzy")) return "Whoa!";
+  if (!strcmp(st, "celebrate")) return "Nice work!";
+  if (!strcmp(st, "heart")) return "Hello!";
+  if (!strcmp(st, "error")) return "Oops...";
+  if (!strcmp(st, "attention") || !strcmp(st, "notification"))
+    return "Needs you";
   if (s.msg.length())
     return s.msg.c_str();
   if (s.project.length())
@@ -404,6 +414,22 @@ static void renderWifiConfirm() {
   drawButton(approveBtn, "Open", C_OK);
 }
 
+// "Allow this tool?" — shown when a synchronous PermissionRequest hook is waiting
+// on the device. A tap approves/denies just this one pending tool call.
+static void renderAsk() {
+  TFT_eSPI &t = display.tft();
+  net::AppState &s = net::server.state();
+  int W = t.width();
+  t.fillScreen(TFT_BLACK);
+  gtext("Allow?", W / 2, 40, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK, TC_DATUM);
+  gtext("Claude wants to run", W / 2, 92, &FreeSans9pt7b, C_MUTED, TFT_BLACK,
+        TC_DATUM);
+  gtextClamp(s.askTool.c_str(), W / 2, 122, &FreeSansBold18pt7b, C_TEXT,
+             TFT_BLACK, MC_DATUM, W - 24);
+  drawButton(denyBtn, "Deny", C_NO);
+  drawButton(approveBtn, "Allow", C_OK);
+}
+
 static void handleSettingsTap(int x, int y) {
   for (int i = 0; i < 4; i++) {
     if (!inRect(setBtns[i], x, y))
@@ -495,6 +521,25 @@ void loop() {
     }
   }
 
+  // ---- on-device approval: a synchronous hook is asking; pop the Allow/Deny
+  //      prompt and wake the screen (the hook is blocking until we tap/timeout)
+  static uint32_t lastAskId = 0;
+  if (s.askId != lastAskId) {
+    lastAskId = s.askId;
+    askOpen = true;
+    askShownAt = now;
+    settingsOpen = statsOpen = wifiConfirmOpen = false;
+    if (!screenOn) {
+      screenOn = true;
+      display.backlight(true);
+    }
+    lastInteraction = now;
+    wasTouched = true;
+    pressStart = now;
+    longFired = true;
+    renderAsk();
+  }
+
   // Track the session's start (total 0->1 edge) every loop -- even while asleep,
   // so a session that begins during sleep stamps the real start, not wake time.
   static int prevTotal = 0;
@@ -537,6 +582,32 @@ void loop() {
       now - lastInteraction > SCREEN_OFF_MS) {
     settingsOpen = statsOpen = wifiConfirmOpen = false;
     forceRedraw = true;
+  }
+
+  // ---- on-device tool approval: tap Allow/Deny for the one pending call;
+  //      no tap in time -> the blocking hook times out -> normal prompt ----
+  if (askOpen) {
+    if (tap && inRect(approveBtn, tx, ty)) {
+      s.decision = "allow";
+      s.decidedId = s.askId;
+      askOpen = false;
+      forceRedraw = true;
+      lastInteraction = now;
+    } else if (tap && inRect(denyBtn, tx, ty)) {
+      s.decision = "deny";
+      s.decidedId = s.askId;
+      askOpen = false;
+      forceRedraw = true;
+      lastInteraction = now;
+    } else if (now - askShownAt > 24000) {
+      // close just BEFORE the hook stops polling (~26s) so a late tap can't land
+      // on a prompt the hook has already abandoned; it then falls back cleanly.
+      askOpen = false;
+      forceRedraw = true;
+    }
+    wasTouched = t;
+    delay(5);
+    return;
   }
 
   // ---- settings menu mode ----

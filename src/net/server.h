@@ -26,6 +26,12 @@ struct AppState {
   // fxId bumps once per effect event so the renderer edge-triggers a short anim.
   String fx;
   uint32_t fxId = 0;
+  // on-device approval of a pending tool call (synchronous PermissionRequest
+  // hook POSTs /ask, then polls /decision). One in flight at a time.
+  String askTool;          // tool awaiting a tap; "" = none pending
+  uint32_t askId = 0;      // bumps on each /ask
+  String decision;         // "allow"/"deny" once the user taps; "" = undecided
+  uint32_t decidedId = 0;  // the askId the decision belongs to
   bool dirty = true;       // renderer should repaint
 };
 
