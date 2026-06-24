@@ -7,8 +7,11 @@
 #include "render/character.h"
 #include "net/server.h"
 
-// Palette (RGB565). Coral = Anthropic accent (#D97757).
-#define C_CORAL 0xDBAA
+// Palette (RGB565). Coral = Anthropic accent (#D97757). The character art is
+// warmed on-screen by render::tintColor (R x1.06, B x0.85); the raw #D97757
+// reads pinker than that, so the UI accent uses the SAME-tinted coral (~#E6774A)
+// so headline/number text matches the Clawd you actually see. (raw was 0xDBAA)
+#define C_CORAL 0xE3A8
 #define C_TEXT TFT_WHITE
 #define C_MUTED 0x8C71
 #define C_OK 0x256C   // refined green
@@ -59,20 +62,49 @@ static uint32_t pressStart = 0;
 static bool longFired = false;
 
 #define SCREEN_OFF_MS 30000UL
+#define PRESLEEP_MS 8000UL // dim the backlight this long before the full cut-off
+
+// ---- enrichment state -------------------------------------------------------
+// Do Not Disturb: keep the dashboard, but silence the RGB LED and never wake the
+// screen for a nudge. Brightness: the user's "on" backlight level (PWM).
+static bool dndOn = false;
+static int brightPct = 100;
+// Session intensity tier (0 calm / 1 busy / 2 intense), from the hook's rolling
+// tool-call burst + active-subagent count. Drives clip speed, tint and LED.
+static int intensity = 0;
+// "Your turn" waiting nudge: when Claude hands the turn back and idles, the LED
+// (and eventually the screen) escalate the longer you don't respond.
+static uint32_t waitStart = 0;     // millis the current wait began (0 = none)
+static uint32_t lastWaitId = 0;    // edge-detect a fresh wait from the hook
+static uint32_t lastNudgeWake = 0; // throttle escalated screen wakes
+// Idle micro-behaviour: gently rotate a friendly line while standing by.
+static const char *IDLE_MSGS[] = {"Ready when you are", "All caught up",
+                                  "Standing by", "At your service",
+                                  "Idle \xE2\x80\x94 tap me"};
+static const int N_IDLE = sizeof(IDLE_MSGS) / sizeof(IDLE_MSGS[0]);
+static int idleIdx = 0;
+
+// Map the hook's burst (tool calls/min) + active subagents to a 0/1/2 tier.
+static int intensityTier(int burst, int agents) {
+  if (burst >= 8 || agents >= 2) return 2;
+  if (burst >= 3 || agents >= 1) return 1;
+  return 0;
+}
 
 struct Rect {
   int x, y, w, h;
 };
 static Rect denyBtn, approveBtn;
-static Rect setBtns[4]; // Settings: Stats / Recalibrate / WiFi setup / Close
+// Settings: Stats / DND / Brightness / Recalibrate / WiFi setup / Close
+static Rect setBtns[6];
 
 static void computeButtons() {
   int W = display.tft().width(), H = display.tft().height();
   int bh = 56, m = 8;
   denyBtn = {m, H - bh - 6, (W - 3 * m) / 2, bh};
   approveBtn = {denyBtn.x + denyBtn.w + m, H - bh - 6, (W - 3 * m) / 2, bh};
-  int sy = 56, sbh = 46, gap = 14;
-  for (int i = 0; i < 4; i++)
+  int sy = 50, sbh = 36, gap = 8; // 6 rows fit 240x320 (50 + 6*44 = 314)
+  for (int i = 0; i < 6; i++)
     setBtns[i] = {20, sy + i * (sbh + gap), W - 40, sbh};
 }
 
@@ -142,6 +174,8 @@ static const char *stateName(uint32_t now) {
     return "sleep";
   if (s.running > 0)
     return s.act.length() ? s.act.c_str() : "busy"; // tool-specific clip, else carousel
+  if (s.waiting)
+    return "attention"; // Claude handed the turn back -> sticky "your turn" nudge
   if (s.total > 0)
     return "idle";
   return "sleep";
@@ -168,16 +202,64 @@ static const char *actVerb(const char *st) {
   return "Working...";
 }
 
+// Ambient LED "language": a colour + blink rhythm per state (binary RGB, so a
+// breath is a slow blink). blue = working (cooler/quicker as the session heats
+// up), amber = your turn (escalates the longer you ignore it), red = error,
+// green = done, magenta = play, dark = idle. Silenced entirely under DND.
 static void driveLed(const char *st, uint32_t now) {
-  if (!strcmp(st, "dizzy") || !strcmp(st, "heart"))
-    led.set(true, false, true); // magenta / pink
-  else if (!strcmp(st, "celebrate"))
-    led.set(false, true, false); // green
-  else if (!strcmp(st, "attention") || !strcmp(st, "notification") ||
-           !strcmp(st, "error"))
-    led.set(true, false, false); // red
-  else if (isWork(st))
-    led.set(false, false, true); // blue
+  if (dndOn) {
+    led.off();
+    return;
+  }
+  bool r = false, g = false, b = false;
+  uint32_t period = 0, onMs = 0; // period 0 -> solid
+
+  if (!strcmp(st, "attention") || !strcmp(st, "notification")) {
+    r = g = true; // amber alert
+    uint32_t waited = waitStart ? now - waitStart : 0;
+    if (waited > 45000) {
+      period = 240;
+      onMs = 120;
+    } // urgent
+    else if (waited > 15000) {
+      period = 600;
+      onMs = 300;
+    } // insistent
+    else {
+      period = 1500;
+      onMs = 850;
+    } // gentle breath
+  } else if (!strcmp(st, "error")) {
+    r = true;
+    period = 360;
+    onMs = 180; // red blink
+  } else if (!strcmp(st, "dizzy") || !strcmp(st, "heart")) {
+    r = b = true; // magenta
+  } else if (!strcmp(st, "celebrate")) {
+    g = true; // green
+  } else if (isWork(st)) {
+    b = true; // blue focus
+    if (intensity >= 2) {
+      g = true;
+      b = true;
+      r = false; // cyan, quick
+      period = 520;
+      onMs = 300;
+    } else if (intensity == 1) {
+      period = 1100;
+      onMs = 650;
+    } else {
+      period = 1800;
+      onMs = 1050; // calm breath
+    }
+  } else {
+    led.off();
+    return; // idle / sleep: dark
+  }
+
+  bool on = (period == 0) ? true : ((now % period) < onMs);
+  if (on)
+    led.set(r, g, b);
   else
     led.off();
 }
@@ -277,6 +359,33 @@ static void drawStatValues(int W, int cy, bool force) {
   if (force || strcmp(dur, pD)) { strcpy(pD, dur); drawCell(W * 7 / 8, yB, dur, C_TEXT, &FreeSansBold9pt7b, 15, W / 4 - 8); }
 }
 
+// Session-intensity pips in the top bar (just left of the WiFi dot): 1 dot busy,
+// 2 dots intense, none when calm. Cleared in place so it never flashes the bar.
+static void renderIntensity() {
+  TFT_eSPI &t = display.tft();
+  int W = t.width();
+  t.fillRect(W - 56, 6, 36, 15, TFT_BLACK);
+  for (int i = 0; i < intensity; i++)
+    t.fillCircle(W - 30 - i * 11, 13, 3, C_CORAL);
+}
+
+// Daily-budget gauge: the card's divider becomes a thin progress bar when a
+// budget is configured (coral -> amber near the cap -> red over). Uses the
+// animated token count (dToday) so it eases with the odometer.
+static void drawBudgetBar(int W, int cy) {
+  net::AppState &s = net::server.state();
+  TFT_eSPI &t = display.tft();
+  int bx = 20, bw = W - 40, by = cy + 38, bh = 4;
+  t.fillRoundRect(bx, by, bw, bh, 2, 0x2945); // track
+  double frac = s.budget > 0 ? (double)dToday / (double)s.budget : 0;
+  if (frac > 1)
+    frac = 1;
+  int fw = (int)(bw * frac);
+  uint16_t col = frac >= 1.0 ? C_NO : (frac > 0.85 ? 0xFD20 : C_CORAL);
+  if (fw > 0)
+    t.fillRoundRect(bx, by, fw, bh, 2, col);
+}
+
 // Card headline text: while busy, the device-rotated whimsy verb (synced to the
 // animation); otherwise the hook activity msg, else project, else name.
 static const char *headlineText(const char *st) {
@@ -293,6 +402,8 @@ static const char *headlineText(const char *st) {
   if (!strcmp(st, "error")) return "Oops...";
   if (!strcmp(st, "attention") || !strcmp(st, "notification"))
     return "Needs you";
+  if (!strcmp(st, "idle")) // standing by -> a gently rotating friendly line
+    return IDLE_MSGS[idleIdx];
   if (s.msg.length())
     return s.msg.c_str();
   if (s.project.length())
@@ -321,6 +432,7 @@ static void renderStatic(const char *st) {
   t.fillCircle(13, 13, 5, stateColor(st));
   gtext(stateLabel(st), 26, 14, &FreeSansBold9pt7b, C_TEXT, TFT_BLACK, ML_DATUM);
   t.fillCircle(W - 13, 13, 4, s.wifiUp ? 0x2DEA : 0x9000); // link indicator
+  renderIntensity(); // session-intensity pips
 
   // bottom stats card (just below the character region; cy = REG_Y+REG_H+4)
   int cy = REG_Y + REG_H + 4;
@@ -331,7 +443,10 @@ static void renderStatic(const char *st) {
   // headline (verb when busy, else activity/project) -- shared with renderHeadline
   gtextClamp(headlineText(st), W / 2, cy + 18, &FreeSansBold12pt7b, C_TEXT,
              C_CARD, MC_DATUM, W - 32);
-  t.drawFastHLine(20, cy + 40, W - 40, 0x2945); // divider (gap below the text)
+  if (s.budget > 0)
+    drawBudgetBar(W, cy); // divider doubles as the daily-budget gauge
+  else
+    t.drawFastHLine(20, cy + 40, W - 40, 0x2945); // plain divider
 
   // Two prominent token figures up top (each owns half the card), then a row of
   // four compact activity counts. Labels are drawn here once; the values below
@@ -360,7 +475,7 @@ static void renderStats(bool full) {
   }
   // label left, value right-aligned to the screen edge and clamped so long
   // values (IP / project / big token counts) can't run off the right side.
-  int lx = 18, rx = W - 18, y = 60, dy = 24, vMax = W - 18 - 108;
+  int lx = 18, rx = W - 18, y = 48, dy = 22, vMax = W - 18 - 108;
   char b[24];
   auto row = [&](const char *k, const String &v) {
     t.fillRect(104, y - 13, W - 104 - 6, 20, TFT_BLACK); // clear value cell only
@@ -374,6 +489,13 @@ static void renderStats(bool full) {
   row("Today tok", String(b));
   fmtTok(s.tokensAll, b, sizeof(b));
   row("All-time tok", String(b));
+  // Rough $ estimate (blended rate; the device only sees totals, so it's a
+  // ballpark, hence the "~"). Tune COST_PER_MTOK to your usual model mix.
+  const double COST_PER_MTOK = 6.0;
+  snprintf(b, sizeof(b), "~$%.2f", (double)s.tokens / 1e6 * COST_PER_MTOK);
+  row("Cost today", String(b));
+  snprintf(b, sizeof(b), "~$%.2f", (double)s.tokensAll / 1e6 * COST_PER_MTOK);
+  row("Cost all", String(b));
   row("Tool calls", String(s.tools));
   row("Sessions", String(s.sessions));
   row("Turns", String(s.turns));
@@ -391,11 +513,15 @@ static void renderSettings() {
   TFT_eSPI &t = display.tft();
   int W = t.width();
   t.fillScreen(TFT_BLACK);
-  gtext("Settings", W / 2, 18, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK,
+  gtext("Settings", W / 2, 16, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK,
         TC_DATUM);
-  const char *labels[4] = {"Stats", "Recalibrate", "WiFi setup", "Close"};
-  for (int i = 0; i < 4; i++)
-    drawButton(setBtns[i], labels[i], C_FACE);
+  char dnd[16], bri[20];
+  snprintf(dnd, sizeof(dnd), "DND: %s", dndOn ? "on" : "off");
+  snprintf(bri, sizeof(bri), "Brightness: %d%%", brightPct);
+  const char *labels[6] = {"Stats", dnd,          bri,
+                           "Recalibrate", "WiFi setup", "Close"};
+  for (int i = 0; i < 6; i++)
+    drawButton(setBtns[i], labels[i], (i == 1 && dndOn) ? 0x7B40 : C_FACE);
 }
 
 static void renderWifiConfirm() {
@@ -431,18 +557,30 @@ static void renderAsk() {
 }
 
 static void handleSettingsTap(int x, int y) {
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 6; i++) {
     if (!inRect(setBtns[i], x, y))
       continue;
     if (i == 0) { // open the stats panel
       settingsOpen = false;
       statsOpen = true;
       renderStats(true);
-    } else if (i == 1) { // recalibrate touch (shows visible targets)
+    } else if (i == 1) { // toggle Do Not Disturb (persisted)
+      dndOn = !dndOn;
+      storage.putInt("dnd", dndOn ? 1 : 0);
+      if (dndOn)
+        led.off();
+      renderSettings();
+    } else if (i == 2) { // cycle backlight brightness 100 -> 70 -> 40 (persisted)
+      brightPct = brightPct > 70 ? 70 : (brightPct > 40 ? 40 : 100);
+      display.setBrightness(brightPct);
+      display.backlight(true); // apply immediately
+      storage.putInt("bright", brightPct);
+      renderSettings();
+    } else if (i == 3) { // recalibrate touch (shows visible targets)
       settingsOpen = false;
       touch.calibrate(display);
       forceRedraw = true;
-    } else if (i == 2) { // WiFi setup -> confirm first (avoids accidental taps)
+    } else if (i == 4) { // WiFi setup -> confirm first (avoids accidental taps)
       settingsOpen = false;
       wifiConfirmOpen = true;
       renderWifiConfirm();
@@ -464,6 +602,12 @@ void setup() {
   touch.begin(display, storage);
   led.begin();
   computeButtons();
+
+  // restore persisted prefs (DND + backlight brightness)
+  dndOn = storage.getInt("dnd", 0) != 0;
+  brightPct = storage.getInt("bright", 100);
+  display.setBrightness(brightPct);
+  display.backlight(true);
 
   net::server.setToken(loadOrCreateToken());
 
@@ -540,6 +684,16 @@ void loop() {
     renderAsk();
   }
 
+  // ---- "your turn" waiting nudge: stamp when a fresh wait began (waitId edge),
+  //      so the LED and (past a threshold) the screen escalate the longer the
+  //      turn sits with you. Cleared the moment Claude resumes. ----
+  if (s.waitId != lastWaitId) {
+    lastWaitId = s.waitId;
+    waitStart = now;
+  }
+  if (!s.waiting)
+    waitStart = 0;
+
   // Track the session's start (total 0->1 edge) every loop -- even while asleep,
   // so a session that begins during sleep stamps the real start, not wake time.
   static int prevTotal = 0;
@@ -552,9 +706,14 @@ void loop() {
   int16_t tx, ty;
   bool t = touch.read(tx, ty);
 
-  // ---- asleep: a touch, or Claude starting work, wakes us; else stay dark ----
+  // ---- asleep: a touch, Claude starting work, or an escalated "your turn"
+  //      nudge wakes us (once per wait, unless DND); else stay dark ----
   if (!screenOn) {
-    if (touch.rawPressed() || s.running > 0) {
+    bool nudgeWake = s.waiting && !dndOn && waitStart &&
+                     (now - waitStart > 45000) && (lastNudgeWake < waitStart);
+    if (touch.rawPressed() || s.running > 0 || nudgeWake) {
+      if (nudgeWake)
+        lastNudgeWake = now; // fire the screen-wake just once per wait episode
       screenOn = true;
       display.backlight(true);
       lastInteraction = now;
@@ -563,6 +722,13 @@ void loop() {
       pressStart = now;  // reset the hold timer so the held wake-touch isn't
       longFired = true;  // mistaken for a long-press (was popping open Settings)
     } else {
+      // stay dark, but keep the RGB nudge alive so a "your turn" still pulses
+      // with the screen off (driveLed self-silences for idle/sleep and DND).
+      static uint32_t ledOffT = 0;
+      if (now - ledOffT > 100) {
+        ledOffT = now;
+        driveLed(stateName(now), now);
+      }
       wasTouched = false;
       delay(10);
       return;
@@ -687,32 +853,63 @@ void loop() {
 
   const char *st = stateName(now);
 
-  // ---- auto screen-off when calm (idle, no transient animation) ----
-  bool calm = s.running == 0 && now >= dizzyUntil;
-  if (screenOn && calm && now - lastInteraction > SCREEN_OFF_MS) {
+  // ---- auto screen-off when calm; PWM-dim for a few seconds first ----
+  bool calm = s.running == 0 && now >= dizzyUntil && now >= fxUntil;
+  uint32_t idleFor = now - lastInteraction;
+  static bool dimmed = false;
+  if (screenOn && calm && idleFor > SCREEN_OFF_MS) {
     screenOn = false;
+    dimmed = false;
     display.backlight(false);
     led.off();
+  } else if (screenOn) {
+    // pre-sleep fade: ease the backlight down in the last PRESLEEP_MS so the
+    // cut-off isn't an abrupt blackout (also a subtle "about to sleep" cue).
+    bool wantDim = calm && idleFor > (SCREEN_OFF_MS - PRESLEEP_MS);
+    if (wantDim && !dimmed) {
+      dimmed = true;
+      display.backlightLevel(20);
+    } else if (!wantDim && dimmed) {
+      dimmed = false;
+      display.backlight(true);
+    }
   }
   if (!screenOn) {
     delay(8);
     return;
   }
 
-  // ---- render full card on state/data change ----
+  // ---- render: FULL card only on a real state change / forced redraw (a full
+  //      fillRect repaint flashes, so we never do it for routine data updates).
+  //      A data-only change (new event, same state) just refreshes the headline
+  //      in place; the stat cells + budget bar roll on their own below. ----
   static String last = "?";
-  if (s.dirty || forceRedraw || last != st) {
-    s.dirty = false;
+  if (forceRedraw || last != st) {
     forceRedraw = false;
+    s.dirty = false;
     last = st;
     renderStatic(st);
-    if (haveChar)
+    if (haveChar) {
       render::character.setState(st);
-    if (haveChar)
       lastLoops = render::character.loops(); // sync so it ticks on next switch
+    }
+  } else if (s.dirty) {
+    s.dirty = false;
+    renderHeadline(st); // activity/project text changed -> in-place, no flash
   }
   if (haveChar)
     render::character.update();
+
+  // ---- session-intensity tier -> clip speed/tint + top-bar pips ----
+  int tier = isWork(st) ? intensityTier(s.burst, s.agents) : 0;
+  if (tier != intensity) {
+    intensity = tier;
+    renderIntensity();
+    if (haveChar) {
+      render::character.setSpeed(tier >= 2 ? 122 : (tier == 1 ? 110 : 100));
+      render::character.setTint(tier >= 2 ? 2 : 1);
+    }
+  }
 
   // ---- rotate the busy verb when the clip switches (same logic as the
   //      animation); repaint ONLY the headline so the stats grid never flickers
@@ -721,6 +918,16 @@ void loop() {
     if (lc != lastLoops) {
       lastLoops = lc;
       verbIdx = (verbIdx + 1) % N_WHIMSY;
+      renderHeadline(st);
+    }
+  }
+
+  // ---- idle micro-behaviour: gently rotate the standing-by line ----
+  if (!strcmp(st, "idle")) {
+    static uint32_t lastIdleRot = 0;
+    if (now - lastIdleRot > 9000) {
+      lastIdleRot = now;
+      idleIdx = (idleIdx + 1) % N_IDLE;
       renderHeadline(st);
     }
   }
@@ -747,8 +954,12 @@ void loop() {
       lastDurSec = durSec;
       ch = true;
     }
-    if (ch)
-      drawStatValues(display.tft().width(), REG_Y + REG_H + 4, false);
+    if (ch) {
+      int W = display.tft().width();
+      drawStatValues(W, REG_Y + REG_H + 4, false);
+      if (s.budget > 0)
+        drawBudgetBar(W, REG_Y + REG_H + 4); // ease the gauge with the counter
+    }
   }
   delay(2);
 }

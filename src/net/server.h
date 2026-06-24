@@ -26,6 +26,17 @@ struct AppState {
   // fxId bumps once per effect event so the renderer edge-triggers a short anim.
   String fx;
   uint32_t fxId = 0;
+  // Claude is waiting on the user (turn done / a notification with no follow-up).
+  // Sticky until Claude resumes; the renderer escalates a nudge the longer it's
+  // set. waitId bumps each time a fresh wait begins so the nudge timer restarts.
+  bool waiting = false;
+  uint32_t waitId = 0;
+  // session intensity inputs from the hook: tool calls in the last ~minute and
+  // the number of active subagents. Drive the calm/busy/intense tier.
+  int burst = 0;
+  int agents = 0;
+  // optional daily token budget (from buddy.json); 0 = unset -> no budget gauge.
+  long budget = 0;
   // on-device approval of a pending tool call (synchronous PermissionRequest
   // hook POSTs /ask, then polls /decision). One in flight at a time.
   String askTool;          // tool awaiting a tap; "" = none pending

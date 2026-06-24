@@ -27,7 +27,7 @@
     "dizzy": "dizzy.gif",
     "heart": "heart.gif",
     "thinking": "busy_0.gif",
-    "typing": "busy_1.gif",
+    "typing": ["busy_1.gif", "busy_7.gif", "busy_5.gif"],
     "building": "busy_2.gif",
     "sweeping": "busy_6.gif",
     "juggling": "busy_8.gif",
