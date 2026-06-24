@@ -11,15 +11,18 @@ namespace render {
 
 Character character;
 
-// How long a clip plays (looping smoothly) before a multi-clip state switches
-// to the next clip. Larger = clips change less often (no slowdown/freeze).
-#define SWITCH_INTERVAL_MS 5000UL
+// Base dwell: how long a clip plays (looping smoothly) before a multi-clip state
+// switches. We add a small random jitter per clip (below) so switches feel
+// organic instead of a rigid metronome, and only ever switch at a loop boundary.
+#define SWITCH_INTERVAL_MS 6000UL
+#define SWITCH_JITTER_MS 3000UL // 0..3s extra, randomised per clip
 
 // Character region constants come from character.h (render::REG_*).
 static TFT_eSPI *g_tft = nullptr;
 static TFT_eSprite *g_spr = nullptr; // off-screen double-buffer for the region
 static uint32_t g_loops = 0;         // # of clip switches (sync source)
 static uint32_t g_lastSwitch = 0;    // millis of the last clip switch
+static uint32_t g_dwell = SWITCH_INTERVAL_MS; // current clip's randomised dwell
 static int g_tint = 1;               // 0 none, 1 warmer/orange, 2 pinker
 static int g_speed = 100;            // playback speed % (100 = native pace)
 
@@ -251,6 +254,7 @@ void Character::setState(const char *state) {
   g_hist[0] = 0; // current clip; nothing before it yet
   g_hist[1] = -1;
   g_lastSwitch = millis(); // restart the clip-switch timer for the new state
+  g_dwell = SWITCH_INTERVAL_MS + (esp_random() % SWITCH_JITTER_MS);
   if (g_open) {
     gif.close();
     g_open = false;
@@ -278,7 +282,7 @@ void Character::update() {
     // Keep replaying the SAME GIF (smooth) and only switch to the next one in a
     // multi-clip state every SWITCH_INTERVAL_MS, so clips change less often
     // without slowing playback or freezing.
-    if (multi && now - g_lastSwitch >= SWITCH_INTERVAL_MS) {
+    if (multi && now - g_lastSwitch >= g_dwell) {
       int sz = (int)it->second.size();
       int k = (sz - 1 < 2) ? (sz - 1) : 2; // # of recent clips to keep avoiding
       int nxt = g_idx;
@@ -292,6 +296,7 @@ void Character::update() {
       g_hist[0] = nxt;
       g_idx = nxt;
       g_lastSwitch = now;
+      g_dwell = SWITCH_INTERVAL_MS + (esp_random() % SWITCH_JITTER_MS); // jitter
       g_loops++; // sync signal: the clip just switched
     }
     gif.close();
