@@ -911,6 +911,20 @@ void loop() {
     }
   }
 
+  // ---- bind clip switching to Claude Code: each new tool event nudges the
+  //      running animation to another clip (throttled so a burst of fast calls
+  //      doesn't strobe). Long single calls still rotate on the dwell timer. ----
+  static uint32_t lastActSeq = 0;
+  static uint32_t lastEvSwitch = 0;
+  if (s.actSeq != lastActSeq) {
+    lastActSeq = s.actSeq;
+    if (haveChar && isWork(st) && now - lastEvSwitch > 2500) {
+      lastEvSwitch = now;
+      render::character.nextClip();
+      lastLoops = render::character.loops();
+    }
+  }
+
   // ---- rotate the busy verb when the clip switches (same logic as the
   //      animation); repaint ONLY the headline so the stats grid never flickers
   if (!strcmp(st, "busy")) {

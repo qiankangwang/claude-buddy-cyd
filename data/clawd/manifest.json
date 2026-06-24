@@ -30,13 +30,13 @@
     "heart": "heart.gif",
     "thinking": "busy_0.gif",
     "typing": ["busy_1.gif", "busy_7.gif", "busy_5.gif"],
-    "building": "busy_2.gif",
+    "building": ["busy_2.gif", "busy_11.gif"],
     "sweeping": "busy_6.gif",
-    "juggling": "busy_8.gif",
+    "juggling": ["busy_8.gif", "busy_13.gif", "busy_10.gif"],
     "groove": ["busy_9.gif", "busy_13.gif"],
     "carrying": "busy_10.gif",
     "debugger": "busy_11.gif",
-    "reading": "busy_12.gif",
+    "reading": ["busy_12.gif", "busy_0.gif"],
     "error": "dizzy.gif",
     "notification": "attention.gif"
   }
