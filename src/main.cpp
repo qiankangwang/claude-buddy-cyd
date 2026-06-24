@@ -475,9 +475,13 @@ static void renderStatic(const char *st) {
   int cy = REG_Y + REG_H + 4;
   t.fillRect(0, REG_Y + REG_H, W, H - (REG_Y + REG_H), TFT_BLACK);
   // On the needs-you screen, drop the stats card -> a clean alert: just the amber
-  // Clawd and a "Got it" button (drawn by the loop overlay). Tap it to dismiss.
-  if (!strcmp(st, "attention") || !strcmp(st, "notification"))
+  // Clawd and a "Got it" button to dismiss. Drawn ONCE here (the lower area is
+  // static -- the animation stays in the region above it -- so no per-frame
+  // repaint is needed, which is what used to make the button flicker).
+  if (!strcmp(st, "attention") || !strcmp(st, "notification")) {
+    drawButton(ackBtn, "Got it", C_OK);
     return;
+  }
   int chh = H - cy - 6;
   t.fillRoundRect(8, cy, W - 16, chh, 12, C_CARD);
 
@@ -1006,12 +1010,6 @@ void loop() {
   }
   if (haveChar)
     render::character.update();
-
-  // ---- "Got it" pill: overlay the lower character region while a turn is
-  //      waiting and unacknowledged. Redrawn each loop since the animation
-  //      repaints behind it; disappears once acknowledged (calm indicator stays).
-  if ((!strcmp(st, "attention") || !strcmp(st, "notification")) && !waitAcked)
-    drawButton(ackBtn, "Got it", C_OK);
 
   // ---- session-intensity tier -> clip speed/tint + top-bar pips ----
   int tier = isWork(st) ? intensityTier(s.burst, s.agents) : 0;
