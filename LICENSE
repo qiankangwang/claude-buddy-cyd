@@ -22,13 +22,24 @@ SOFTWARE.
 
 ---
 
-Third-party assets:
+Third-party assets and trademarks:
 
-The Clawd character animation pack in `data/clawd/` is not part of the Software
-above and is redistributed under its own MIT license:
+The "Clawd" character and its likeness are the property of Anthropic, PBC. The
+Clawd animation pack in `data/clawd/` and the preview clips in `assets/` are
+NOT part of the MIT-licensed Software above and are NOT licensed under MIT.
+All rights to the character are reserved by Anthropic, PBC.
 
-  Copyright (c) 2026 Anthropic, PBC.
+  * This is an unofficial fan project. It is not affiliated with, sponsored by,
+    or endorsed by Anthropic.
+  * The pixel-art sprite renditions are adapted from
+    https://github.com/rullerzhou-afk/clawd-on-desk. That project's source code
+    is licensed AGPL-3.0, but its artwork/theme assets are explicitly "NOT
+    covered by AGPL-3.0; all rights reserved by copyright holders" — consistent
+    with the Clawd character being Anthropic's intellectual property.
+  * The art is bundled here only for personal, non-commercial maker use, the
+    same way the upstream community projects bundle it.
 
-  obtained from https://github.com/TaoXieSZ/claude-code-buddy (MIT), with sprite
-  art credited to https://github.com/rullerzhou-afk/clawd-on-desk. The full MIT
-  permission and warranty-disclaimer terms above apply to these assets as well.
+If you fork or redistribute this repository, note that the MIT grant covers the
+firmware and tooling ONLY. Replace `data/clawd/` and `assets/` with your own
+art to redistribute the whole thing freely (the character system reads any
+black-background GIF pack — see the README).
