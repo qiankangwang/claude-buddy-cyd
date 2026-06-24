@@ -20,6 +20,7 @@ import urllib.request
 
 CFG = os.path.join(os.path.expanduser("~"), ".claude", "buddy.json")
 TOK_STATE = os.path.join(os.path.expanduser("~"), ".claude", "buddy_tokens.json")
+RT_STATE = os.path.join(os.path.expanduser("~"), ".claude", "buddy_rt.json")
 
 # Bypass any system/env HTTP proxy — the buddy is on the LAN.
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -29,6 +30,42 @@ def _cfg():
     with open(CFG, "r", encoding="utf-8") as f:
         c = json.load(f)
     return c["ip"], c["token"]
+
+
+def _budget():
+    """Optional daily token budget from buddy.json ("budget": 2000000) for the
+    on-device budget gauge. 0/absent -> no gauge."""
+    try:
+        with open(CFG, "r", encoding="utf-8") as f:
+            return int(json.load(f).get("budget", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _intensity(evt, tool):
+    """Rolling-window session intensity: tool calls in the last 60s (burst) and
+    distinct subagent spawns in the last 120s (agents). Persisted so the values
+    decay between events instead of only reflecting this one call."""
+    now = time.time()
+    try:
+        with open(RT_STATE, "r", encoding="utf-8") as f:
+            st = json.load(f)
+    except Exception:
+        st = {}
+    calls = [t for t in st.get("calls", []) if isinstance(t, (int, float))
+             and now - t < 60]
+    tasks = [t for t in st.get("tasks", []) if isinstance(t, (int, float))
+             and now - t < 120]
+    if evt == "PreToolUse":
+        calls.append(now)
+        if tool == "Task":
+            tasks.append(now)
+    try:
+        with open(RT_STATE, "w", encoding="utf-8") as f:
+            json.dump({"calls": calls[-200:], "tasks": tasks[-50:]}, f)
+    except Exception:
+        pass
+    return len(calls), len(tasks)
 
 
 def _post_event(ip, tok, payload):
@@ -265,8 +302,17 @@ def main():
     else:
         running, total, msg = 0, 1, evt
 
+    # waiting = Claude has handed the turn back to you (finished, or asking) and
+    # nothing is running -> the device escalates a "your turn" nudge over time.
+    waiting = evt in ("Stop", "Notification")
+    burst, agents = _intensity(evt, data.get("tool_name", ""))
+
     try:
-        payload = dict(extra, total=total, running=running, msg=msg[:24])
+        payload = dict(extra, total=total, running=running, msg=msg[:24],
+                       waiting=waiting, burst=burst, agents=agents)
+        bud = _budget()
+        if bud:
+            payload["budget"] = bud
         if act:
             payload["act"] = act
         if fx:

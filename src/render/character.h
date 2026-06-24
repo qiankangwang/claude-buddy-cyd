@@ -19,6 +19,8 @@ public:
   void update();                    // advance + draw frames at the GIF's own pace
   void clearArea();                 // black out the character region
   uint32_t loops() const;           // # of GIF loops completed (for sync)
+  void setTint(int tint);           // 0 none, 1 warmer/orange, 2 hotter/pinker
+  void setSpeed(int pct);           // playback speed % (100 = native; >100 faster)
 
 private:
   bool openCurrent();

@@ -57,6 +57,16 @@ static void handleEvent() {
     if (s.fx.length())
       s.fxId++;
   }
+  // "Claude is waiting on you" sticky + intensity inputs. Every event sends
+  // these explicitly (default 0/false), so e.g. a tool starting clears waiting.
+  bool wasWaiting = s.waiting;
+  s.waiting = doc["waiting"] | false;
+  if (s.waiting && !wasWaiting)
+    s.waitId++; // a fresh wait began -> restart the escalating nudge timer
+  s.burst = doc["burst"] | 0;
+  s.agents = doc["agents"] | 0;
+  if (doc["budget"].is<long>() || doc["budget"].is<int>())
+    s.budget = doc["budget"] | s.budget; // sticky once provided
   s.dirty = true;
   http.send(200, "application/json", "{\"ok\":true}");
 }
