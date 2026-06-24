@@ -106,7 +106,8 @@ long-press → **Settings → Stats** (adds project name, uptime, free heap, IP)
 **Ambient cues.** The onboard RGB LED speaks a colour language — blue while
 working (cooler/quicker as the session heats up), amber when it needs you
 (escalating the longer it waits), red on error, green when a turn lands —
-silenced entirely under DND. Session intensity shows as 1–2 pips in the top bar.
+silenced by the **Quiet** setting (LED off / DND). Session intensity shows as
+1–2 pips in the top bar.
 Set an optional daily token `"budget"` in `buddy.json` and the stats-card
 divider becomes a usage gauge (coral → amber near the cap → red over).
 
@@ -214,11 +215,13 @@ merged); if two machines push at once, the device shows whichever pushed last.
 - **Tap** while asleep — wake the screen.
 - **Triple-tap** — `dizzy` easter egg.
 - **Long-press (~1 s)** — open **Settings**: **Stats** (full live panel),
-  **DND** (silence the RGB LED and never wake the screen for a nudge),
-  **Brightness** (cycle the backlight 100 / 70 / 40 %), **Recalibrate** (3-point
-  touch calibration; times out safely if you walk away), **WiFi setup** (re-open
-  the captive portal — keeps the saved password unless you enter a new network),
-  **Close**. DND and brightness persist across reboots.
+  **Quiet** (one button, three steps you tap through — **Off** → **LED off**
+  (silence the RGB LED, screen still wakes) → **DND** (LED off *and* the screen
+  never auto-wakes, only your touch does)), **Brightness** (cycle the backlight
+  100 / 70 / 40 %), **Recalibrate** (3-point touch calibration; times out safely
+  if you walk away), **WiFi setup** (re-open the captive portal — keeps the saved
+  password unless you enter a new network), **Close**. Quiet level and brightness
+  persist across reboots.
 - Auto **screen-off after 30 s** of calm; a touch or new Claude activity wakes it.
 
 ## How usage is counted

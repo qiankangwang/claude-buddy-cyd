@@ -71,9 +71,14 @@ static bool longFired = false;
 #define PRESLEEP_MS 8000UL // dim the backlight this long before the full cut-off
 
 // ---- enrichment state -------------------------------------------------------
-// Do Not Disturb: keep the dashboard, but silence the RGB LED and never wake the
-// screen for a nudge. Brightness: the user's "on" backlight level (PWM).
-static bool dndOn = false;
+// "Quiet" level the user cycles with a single Settings button (three steps):
+//   0 = Off     -> full ambient LED; the screen may auto-wake for nudges/reactions
+//   1 = LED off -> silence the RGB LED only; the screen still auto-wakes
+//   2 = DND     -> LED off AND the screen never auto-wakes (only a touch does)
+// Brightness: the user's "on" backlight level (PWM).
+static int quietLevel = 0;
+static bool ledSilenced() { return quietLevel >= 1; }    // levels 1 and 2
+static bool autoWakeBlocked() { return quietLevel >= 2; } // level 2 only (DND)
 static int brightPct = 100;
 // Session intensity tier (0 calm / 1 busy / 2 intense), from the hook's rolling
 // tool-call burst + active-subagent count. Drives clip speed, tint and LED.
@@ -101,7 +106,7 @@ struct Rect {
   int x, y, w, h;
 };
 static Rect denyBtn, approveBtn;
-// Settings: Stats / DND / Brightness / Recalibrate / WiFi setup / Close
+// Settings: Stats / Quiet / Brightness / Recalibrate / WiFi setup / Close
 static Rect setBtns[6];
 
 static void computeButtons() {
@@ -226,9 +231,9 @@ static const char *actVerb(const char *st) {
 // Ambient LED "language": a colour + blink rhythm per state (binary RGB, so a
 // breath is a slow blink). blue = working (cooler/quicker as the session heats
 // up), amber = your turn (escalates the longer you ignore it), red = error,
-// green = done, magenta = play, dark = idle. Silenced entirely under DND.
+// green = done, magenta = play, dark = idle. Silenced when Quiet >= "LED off".
 static void driveLed(const char *st, uint32_t now) {
-  if (dndOn) {
+  if (ledSilenced()) {
     led.off();
     return;
   }
@@ -536,13 +541,14 @@ static void renderSettings() {
   t.fillScreen(TFT_BLACK);
   gtext("Settings", W / 2, 16, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK,
         TC_DATUM);
-  char dnd[16], bri[20];
-  snprintf(dnd, sizeof(dnd), "DND: %s", dndOn ? "on" : "off");
+  char quiet[20], bri[20];
+  const char *qn = quietLevel == 0 ? "Off" : (quietLevel == 1 ? "LED off" : "DND");
+  snprintf(quiet, sizeof(quiet), "Quiet: %s", qn);
   snprintf(bri, sizeof(bri), "Brightness: %d%%", brightPct);
-  const char *labels[6] = {"Stats", dnd,          bri,
+  const char *labels[6] = {"Stats", quiet,        bri,
                            "Recalibrate", "WiFi setup", "Close"};
   for (int i = 0; i < 6; i++)
-    drawButton(setBtns[i], labels[i], (i == 1 && dndOn) ? 0x7B40 : C_FACE);
+    drawButton(setBtns[i], labels[i], (i == 1 && quietLevel > 0) ? 0x7B40 : C_FACE);
 }
 
 static void renderWifiConfirm() {
@@ -585,11 +591,11 @@ static void handleSettingsTap(int x, int y) {
       settingsOpen = false;
       statsOpen = true;
       renderStats(true);
-    } else if (i == 1) { // toggle Do Not Disturb (persisted)
-      dndOn = !dndOn;
-      storage.putInt("dnd", dndOn ? 1 : 0);
-      if (dndOn)
-        led.off();
+    } else if (i == 1) { // cycle Quiet: Off -> LED off -> DND (persisted)
+      quietLevel = (quietLevel + 1) % 3;
+      storage.putInt("quiet", quietLevel);
+      if (ledSilenced())
+        led.off(); // apply the LED silence immediately
       renderSettings();
     } else if (i == 2) { // cycle backlight brightness 100 -> 70 -> 40 (persisted)
       brightPct = brightPct > 70 ? 70 : (brightPct > 40 ? 40 : 100);
@@ -624,8 +630,9 @@ void setup() {
   led.begin();
   computeButtons();
 
-  // restore persisted prefs (DND + backlight brightness)
-  dndOn = storage.getInt("dnd", 0) != 0;
+  // restore persisted prefs (Quiet level + backlight brightness); migrate the
+  // old boolean "dnd" key (on -> DND) for anyone upgrading.
+  quietLevel = storage.getInt("quiet", storage.getInt("dnd", 0) ? 2 : 0);
   brightPct = storage.getInt("bright", 100);
   display.setBrightness(brightPct);
   display.backlight(true);
@@ -676,7 +683,7 @@ void loop() {
     fxState = s.fx;
     fxUntil = now + (s.fx == "attention" ? 5000UL : 3000UL);
     forceRedraw = true;
-    if (!screenOn) {
+    if (!screenOn && !autoWakeBlocked()) { // DND: react silently, don't wake
       screenOn = true;
       display.backlight(true);
       lastInteraction = now;
@@ -747,7 +754,7 @@ void loop() {
   // ---- asleep: a touch, Claude starting work, or an escalated "your turn"
   //      nudge wakes us (once per wait, unless DND); else stay dark ----
   if (!screenOn) {
-    bool nudgeWake = s.waiting && !dndOn && waitStart &&
+    bool nudgeWake = s.waiting && !autoWakeBlocked() && waitStart &&
                      (now - waitStart > 45000) && (lastNudgeWake < waitStart);
     if (touch.rawPressed() || s.running > 0 || nudgeWake) {
       if (nudgeWake)
