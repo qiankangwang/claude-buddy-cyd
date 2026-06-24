@@ -95,10 +95,11 @@ know the device's IP + token (see [setup](#first-time-setup)).
 
 `celebrate` / `heart` / `error` are short reactions that play for a few seconds
 (and wake the screen if it's off), then fall back to the normal state.
-`attention` ("Needs you") is sticky until Claude resumes — or until you tap
-**Got it** on the screen to acknowledge it: the nudge stops escalating and won't
-wake the screen again, while a calm amber pulse stays until the next time Claude
-needs you. Acknowledging is local — it doesn't reply to Claude.
+`attention` ("Needs you") is sticky until Claude resumes — or until you dismiss
+it on the device. While it waits, the screen drops the stats card for a clean
+alert (just the amber Clawd and a **Got it** button); tapping **Got it** drops
+the device straight back to idle (LED off) until the next time Claude needs you.
+Dismissing is local — it doesn't reply to Claude.
 
 **Stats card** (bottom): two headline figures — **Today** and **Total** tokens —
 over four compact counts: **Tools** (tool calls), **Turns** (assistant turns),
@@ -111,15 +112,8 @@ working (cooler/quicker as the session heats up), amber when it needs you
 (escalating the longer it waits), red on error, green when a turn lands —
 silenced by the **Quiet** setting (LED off / DND). Session intensity shows as
 1–2 pips in the top bar.
-**Usage gauges.** Set an optional daily token `"budget"` in `buddy.json` and the
-stats-card divider becomes a usage gauge (coral → amber near the cap → red over).
-Set `"limit5h"` and the home card instead shows a **rolling-5h quota bar** that
-depletes as you spend, with a `~NN%`-left label (green → amber → red). ⚠️ It is
-an *approximate* estimate summed from transcript token counts — Claude Code does
-not expose your real plan limit to scripts, so treat it as directional, not
-exact. The one authoritative signal a hook can catch is a usage-limit
-**notification**: when Claude reports you're at/near the limit, the device flips
-to a red **LIMIT** alert showing the message (and the real reset time, if given).
+Set an optional daily token `"budget"` in `buddy.json` and the stats-card
+divider becomes a usage gauge (coral → amber near the cap → red over).
 
 ## Hardware
 
@@ -223,8 +217,8 @@ merged); if two machines push at once, the device shows whichever pushed last.
 ## On-device controls
 
 - **Tap** while asleep — wake the screen.
-- **Tap "Got it"** on the *Needs you* screen — acknowledge the nudge so it stops
-  escalating and won't wake the screen again (a fresh turn re-arms it).
+- **Tap "Got it"** on the *Needs you* screen — dismiss the nudge: the device
+  drops back to idle (LED off) until the next time Claude needs you.
 - **Triple-tap** — `dizzy` easter egg.
 - **Long-press (~1 s)** — open **Settings**: **Stats** (full live panel),
   **Quiet** (one button, three steps you tap through — **Off** → **LED off**
