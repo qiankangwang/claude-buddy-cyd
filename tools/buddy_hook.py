@@ -274,8 +274,8 @@ def main():
     TOOL_ACT = {
         "Edit": "typing", "Write": "typing", "MultiEdit": "typing",
         "NotebookEdit": "typing", "Bash": "building", "BashOutput": "building",
-        "KillShell": "building", "Read": "thinking", "Grep": "thinking",
-        "Glob": "thinking", "WebFetch": "thinking", "WebSearch": "thinking",
+        "KillShell": "building", "Read": "reading", "Grep": "reading",
+        "Glob": "reading", "WebFetch": "thinking", "WebSearch": "thinking",
         "Task": "juggling",
     }
     act = fx = ""
