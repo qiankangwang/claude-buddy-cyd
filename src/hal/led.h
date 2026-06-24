@@ -13,7 +13,7 @@ public:
   void setBrightness(uint8_t pct); // 0..100% of full-on for lit channels
 
 private:
-  uint8_t bright_ = 20; // the CYD LED is very bright; default to a gentle glow
+  uint8_t bright_ = 10; // the CYD LED is very bright; default to a faint glow
 };
 
 } // namespace hal
