@@ -34,6 +34,12 @@ static String fxState;
 // power / interaction
 static uint32_t lastInteraction = 0;
 static uint32_t sessionStart = 0; // millis when the current Claude session began
+// activity watchdog: millis of the most recent hook event (any /event POST).
+// The running state is hook-driven, so if a turn is interrupted (Esc, a crash, a
+// dropped packet) and its closing Stop never arrives, we'd otherwise sit on a
+// WORKING clip forever. We fall back to calm once an activity goes silent past
+// its plausible runtime. 0 = no event seen yet.
+static uint32_t lastEventMs = 0;
 static bool screenOn = true, forceRedraw = false, wasTouched = false, haveChar = false;
 // triple-tap detection: count taps that arrive in quick succession; any gap
 // longer than TAP_GAP_MS restarts the count, so it's a real fast triple-tap.
@@ -189,6 +195,21 @@ static bool isWork(const char *st) {
   for (auto w : W)
     if (!strcmp(st, w)) return true;
   return false;
+}
+// How long an activity may go silent (no new hook event) before we treat it as
+// stale/abandoned and drop back to calm. Tuned per clip: tools that legitimately
+// run long (Bash builds/tests, subagents, web fetches, compaction) get a roomy
+// window; quick edits/reads recover fast. A genuinely long tool that crosses its
+// window just shows idle until its PostToolUse lands — a minor cosmetic cost in
+// exchange for never being permanently stuck on a WORKING screen.
+static uint32_t actTimeout(const char *st) {
+  if (!strcmp(st, "juggling")) return 600000UL; // subagents (Task) run longest
+  if (!strcmp(st, "building")) return 360000UL; // Bash: builds/installs/tests
+  if (!strcmp(st, "thinking")) return 180000UL; // deep reasoning / web fetch
+  if (!strcmp(st, "sweeping")) return 180000UL; // context compaction
+  if (!strcmp(st, "typing") || !strcmp(st, "reading"))
+    return 90000UL; // edits/reads are quick; recover promptly
+  return 180000UL;  // generic busy / carousel / unknown
 }
 static const char *actVerb(const char *st) {
   if (!strcmp(st, "typing")) return "Editing...";
@@ -693,6 +714,23 @@ void loop() {
   }
   if (!s.waiting)
     waitStart = 0;
+
+  // ---- activity watchdog: stamp the time of every hook event (actSeq bumps on
+  //      each /event). If we're "running" but the current activity has gone quiet
+  //      longer than it could plausibly still be working, the closing event never
+  //      came (interrupted turn / crash / lost packet) -> abandon it so we fall
+  //      back to calm. The next real event re-arms running cleanly. ----
+  static uint32_t lastEventSeq = 0;
+  if (s.actSeq != lastEventSeq) {
+    lastEventSeq = s.actSeq;
+    lastEventMs = now;
+  }
+  if (s.running > 0 && lastEventMs &&
+      now - lastEventMs > actTimeout(s.act.length() ? s.act.c_str() : "busy")) {
+    s.running = 0; // stale activity: stop pretending Claude is still working
+    s.act = "";
+    s.dirty = true;
+  }
 
   // Track the session's start (total 0->1 edge) every loop -- even while asleep,
   // so a session that begins during sleep stamps the real start, not wake time.
