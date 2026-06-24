@@ -40,11 +40,6 @@ struct AppState {
   int agents = 0;
   // optional daily token budget (from buddy.json); 0 = unset -> no budget gauge.
   long budget = 0;
-  // optional rolling-5h usage cap (buddy.json "limit5h"); 0 = unset -> no quota
-  // bar. tok5h is the hook's APPROXIMATE rolling 5h token sum (not Anthropic's
-  // real plan metering — a directional estimate) shown as the home quota gauge.
-  long limit5h = 0;
-  long tok5h = 0;
   // on-device approval of a pending tool call (synchronous PermissionRequest
   // hook POSTs /ask, then polls /decision). One in flight at a time.
   String askTool;          // tool awaiting a tap; "" = none pending

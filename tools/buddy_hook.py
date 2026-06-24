@@ -12,7 +12,6 @@ Per event it sends: current activity, project name, and today's usage rollup
 Config: ~/.claude/buddy.json  ->  {"ip": "192.168.x.x", "token": "...."}
 Fail-open: any device/network error is swallowed (never blocks the session).
 """
-import calendar
 import json
 import os
 import sys
@@ -22,8 +21,6 @@ import urllib.request
 CFG = os.path.join(os.path.expanduser("~"), ".claude", "buddy.json")
 TOK_STATE = os.path.join(os.path.expanduser("~"), ".claude", "buddy_tokens.json")
 RT_STATE = os.path.join(os.path.expanduser("~"), ".claude", "buddy_rt.json")
-FIVEH_STATE = os.path.join(os.path.expanduser("~"), ".claude", "buddy_5h.json")
-FIVEH_WINDOW = 5 * 3600  # rolling usage window (seconds)
 
 # Bypass any system/env HTTP proxy — the buddy is on the LAN.
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -43,58 +40,6 @@ def _budget():
             return int(json.load(f).get("budget", 0) or 0)
     except Exception:
         return 0
-
-
-def _limit5h():
-    """Optional rolling-5h token cap from buddy.json ("limit5h": 8000000) for the
-    home-screen usage gauge. 0/absent -> no quota bar. NOTE: this is the user's
-    own approximation of their plan's 5h window — Claude Code does not expose the
-    real subscription limit to scripts, so the gauge is a directional estimate."""
-    try:
-        with open(CFG, "r", encoding="utf-8") as f:
-            return int(json.load(f).get("limit5h", 0) or 0)
-    except Exception:
-        return 0
-
-
-def _parse_ts(s):
-    """ISO-8601 (e.g. 2026-06-25T12:34:56.789Z) -> epoch seconds (UTC). 0 on
-    failure. Transcript timestamps are UTC, so timegm gives the right epoch."""
-    if not isinstance(s, str) or not s:
-        return 0
-    try:
-        s = s.strip().replace("Z", "")
-        if "." in s:
-            s = s.split(".", 1)[0]
-        return int(calendar.timegm(time.strptime(s, "%Y-%m-%dT%H:%M:%S")))
-    except Exception:
-        return 0
-
-
-def _rolling_5h(msgs):
-    """Approximate tokens used in the last 5h across ALL sessions. Persisted in
-    buddy_5h.json keyed by assistant-message id (dedup-safe across re-scans and
-    across sessions, since every session's events feed the same file); entries
-    older than the window are pruned each call. Returns the windowed token sum."""
-    now = time.time()
-    try:
-        with open(FIVEH_STATE, "r", encoding="utf-8") as f:
-            st = json.load(f)
-    except Exception:
-        st = {}
-    if not isinstance(st, dict):
-        st = {}
-    for mid, ts, tk in msgs:
-        if mid and ts and tk:
-            st[mid] = [ts, tk]
-    st = {k: v for k, v in st.items()
-          if isinstance(v, list) and len(v) == 2 and now - v[0] < FIVEH_WINDOW}
-    try:
-        with open(FIVEH_STATE, "w", encoding="utf-8") as f:
-            json.dump(st, f)
-    except Exception:
-        pass
-    return sum(int(v[1] or 0) for v in st.values())
 
 
 def _intensity(evt, tool):
@@ -191,7 +136,6 @@ def _scan_transcript(path):
                     continue
                 if o.get("type") != "assistant":
                     continue
-                ts = _parse_ts(o.get("timestamp"))
                 msg = o.get("message") or {}
                 if not isinstance(msg, dict):
                     msg = {}
@@ -209,7 +153,7 @@ def _scan_transcript(path):
                             tools += 1
                 mid = msg.get("id")
                 if mid:
-                    seen[mid] = {"tok": tok, "tools": tools, "ts": ts}
+                    seen[mid] = {"tok": tok, "tools": tools}
                 else:
                     extra_tok += tok
                     extra_tools += tools
@@ -220,8 +164,6 @@ def _scan_transcript(path):
         "tok": sum(r["tok"] for r in seen.values()) + extra_tok,
         "tools": sum(r["tools"] for r in seen.values()) + extra_tools,
         "turns": len(seen) + extra_turns,
-        # per-message (id, timestamp, tokens) for the rolling-5h accumulator
-        "msgs": [(mid, r.get("ts", 0), r["tok"]) for mid, r in seen.items()],
     }
 
 
@@ -234,9 +176,6 @@ def _today_stats(data):
     sess = _scan_transcript(tp)
     if sess is None:
         return None
-    # rolling-5h estimate (and drop the per-message list so it never bloats the
-    # persisted today-state below)
-    tok5h = _rolling_5h(sess.pop("msgs", []))
     today = time.strftime("%Y-%m-%d", time.localtime())
     try:
         with open(TOK_STATE, "r", encoding="utf-8") as f:
@@ -291,7 +230,6 @@ def _today_stats(data):
         "tools": _sum("tools"),
         "turns": _sum("turns"),
         "sessions": len(sessions),
-        "tok5h": tok5h,
     }
 
 
@@ -341,7 +279,6 @@ def main():
         "Task": "juggling",
     }
     act = fx = ""
-    is_limit = False  # a usage/rate-limit notification -> distinct red alert
     if evt in ("PreToolUse", "PostToolUse"):
         running, total = 1, 1
         act = TOOL_ACT.get(data.get("tool_name", ""), "")
@@ -359,12 +296,7 @@ def main():
     elif evt == "PreCompact":
         running, total, msg, fx = 1, 1, "compacting", "sweeping"
     elif evt == "Notification":
-        note = str(data.get("notification", "notice"))
-        # surface usage/rate-limit notices as a distinct sticky red "LIMIT" alert
-        # (the only authoritative quota signal Claude Code exposes to a hook)
-        is_limit = "limit" in note.lower()
-        running, total, msg = 0, 1, note
-        fx = "limit" if is_limit else "notification"
+        running, total, msg, fx = 0, 1, str(data.get("notification", "notice")), "notification"
     elif evt == "SessionEnd":
         running, total, msg = 0, 0, "bye"
     else:
@@ -372,18 +304,15 @@ def main():
 
     # waiting = Claude has handed the turn back to you (finished, or asking) and
     # nothing is running -> the device escalates a "your turn" nudge over time.
-    waiting = (evt == "Stop") or (evt == "Notification" and not is_limit)
+    waiting = evt in ("Stop", "Notification")
     burst, agents = _intensity(evt, data.get("tool_name", ""))
 
     try:
-        payload = dict(extra, total=total, running=running, msg=msg[:48],
+        payload = dict(extra, total=total, running=running, msg=msg[:24],
                        waiting=waiting, burst=burst, agents=agents)
         bud = _budget()
         if bud:
             payload["budget"] = bud
-        lim = _limit5h()
-        if lim:
-            payload["limit5h"] = lim
         if act:
             payload["act"] = act
         if fx:
