@@ -61,6 +61,34 @@ static void handleEvent() {
   http.send(200, "application/json", "{\"ok\":true}");
 }
 
+// POST /ask {"tool":"Bash"} -> show an Allow/Deny prompt; the (synchronous) hook
+// then polls GET /decision for the user's tap.
+static void handleAsk() {
+  if (!authed())
+    return;
+  if (http.method() != HTTP_POST) {
+    http.send(405, "text/plain", "POST only");
+    return;
+  }
+  JsonDocument doc;
+  deserializeJson(doc, http.arg("plain"));
+  g_state.askTool = (const char *)(doc["tool"] | "this tool");
+  g_state.askId++;
+  g_state.decision = ""; // reset; undecided until a tap
+  g_state.dirty = true;
+  http.send(200, "application/json",
+            String("{\"ok\":true,\"id\":") + g_state.askId + "}");
+}
+
+// GET /decision -> {"decision":"allow"|"deny"|""} for the current pending ask.
+static void handleDecision() {
+  if (!authed())
+    return;
+  String d = (g_state.decidedId == g_state.askId) ? g_state.decision : String("");
+  http.send(200, "application/json",
+            String("{\"decision\":\"") + d + "\"}");
+}
+
 void Server::begin(std::function<void(const String &)> onPortal) {
   g_portalCb = onPortal;
   WiFi.mode(WIFI_STA);
@@ -81,6 +109,8 @@ void Server::begin(std::function<void(const String &)> onPortal) {
     if (MDNS.begin("claude-cyd"))
       MDNS.addService("http", "tcp", 80);
     http.on("/event", handleEvent);
+    http.on("/ask", handleAsk);
+    http.on("/decision", handleDecision);
     http.on("/", []() {
       http.send(200, "text/plain", String("CYD Buddy OK ip=") + g_state.ip);
     });

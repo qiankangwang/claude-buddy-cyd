@@ -41,6 +41,34 @@ def _post_event(ip, tok, payload):
     _opener.open(req, timeout=5).read()
 
 
+def _ask_decision(ip, tok, tool, timeout=26):
+    """Show an Allow/Deny prompt on the device for a pending tool call, then poll
+    for the tap. Returns "allow"/"deny", or "" on timeout/unreachable so the
+    caller FAILS OPEN to Claude's normal permission prompt."""
+    try:
+        req = urllib.request.Request(
+            "http://%s/ask" % ip,
+            data=json.dumps({"tool": tool}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Buddy-Token": tok},
+            method="POST",
+        )
+        _opener.open(req, timeout=4).read()
+    except Exception:
+        return ""  # device unreachable -> normal prompt
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            req = urllib.request.Request("http://%s/decision" % ip,
+                                         headers={"X-Buddy-Token": tok})
+            r = json.loads(_opener.open(req, timeout=3).read().decode("utf-8"))
+            if r.get("decision") in ("allow", "deny"):
+                return r["decision"]
+        except Exception:
+            pass
+        time.sleep(0.4)
+    return ""
+
+
 def _project(data):
     cwd = data.get("cwd") or os.getcwd()
     return os.path.basename(os.path.normpath(cwd))[:24]
@@ -178,6 +206,23 @@ def main():
         ip, tok = _cfg()
     except Exception:
         return 0  # not configured -> do nothing
+
+    # PermissionRequest: synchronous on-device approval. Output the user's tap as
+    # a permission decision; fail OPEN (no output -> normal prompt) on timeout or
+    # an unreachable device. Skips the stats/animation path below.
+    if evt == "PermissionRequest":
+        d = _ask_decision(ip, tok, data.get("tool_name", "this tool"))
+        if d:
+            # PermissionRequest contract: decision.behavior is "allow"|"block".
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {
+                    "behavior": "allow" if d == "allow" else "block",
+                    "message": ("Approved" if d == "allow" else "Denied") +
+                               " on the Claude Buddy device",
+                },
+            }}))
+        return 0
 
     extra = {"project": _project(data)}
     stats = _today_stats(data)

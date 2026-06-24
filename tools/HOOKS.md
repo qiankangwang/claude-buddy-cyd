@@ -2,9 +2,11 @@
 
 The buddy is driven entirely by Claude Code **hooks** (no official Hardware
 Buddy / BLE feature needed). A tiny helper (`buddy_hook.py`) bridges hook events
-to the CYD over the LAN (HTTP + `X-Buddy-Token`). The device is a **passive
-stats dashboard** — it shows what Claude is doing and today's usage; there is no
-on-device approval, so every hook is non-blocking and never affects a session.
+to the CYD over the LAN (HTTP + `X-Buddy-Token`). By default it is a **passive
+stats dashboard** — every status hook is non-blocking and never affects a
+session. One **optional** hook (`PermissionRequest`, §2.1) is synchronous and
+lets you **approve a tool call by tapping the device** instead of the terminal;
+it always fails open, so the session is never stuck if the device is off.
 
 ## 1. Config (device address + secret; NOT committed)
 
@@ -37,6 +39,24 @@ Replace `<repo>` with the absolute path to this checkout — **or**, for a setup
 that doesn't depend on the repo, copy the single file `buddy_hook.py` to
 `~/.claude/buddy_hook.py` and point the command there (see §4). `PreToolUse`/
 `PostToolUse` make the activity + tool counter update live on every tool call.
+
+## 2.1 Optional: approve tool calls on the device (`PermissionRequest`)
+
+Want to tap **Allow / Deny** on the gadget instead of the terminal? Add **one
+more** hook — but this one is **synchronous** (no `async`), because Claude waits
+for your tap:
+
+```json
+"PermissionRequest": [{ "hooks": [{ "type": "command", "command": "python \"<repo>/tools/buddy_hook.py\"", "timeout": 30 }] }]
+```
+
+`PermissionRequest` fires **only when a permission prompt would appear** (not on
+every tool), so it never slows ordinary auto-approved calls. When it fires the
+device shows the tool name with **Allow / Deny** buttons; your tap is returned to
+Claude as the permission decision. **Fail-open guarantees:** if the device is
+unreachable, or you don't tap within ~26 s, the hook prints nothing and Claude
+falls back to the **normal terminal prompt** — you're never blocked. Leave this
+hook out entirely to keep the device purely a dashboard.
 
 ## 3. What it sends
 
@@ -76,8 +96,12 @@ pushed last.
 
 ## 5. Behaviour / safety
 
-- Device unreachable or slow → the hook swallows the error and returns
+- Device unreachable or slow → the status hook swallows the error and returns
   immediately; it never blocks or breaks a session.
+- The optional approval hook (§2.1) **fails open**: an unreachable device or a
+  no-tap timeout yields no decision, so Claude shows its normal prompt. It can
+  only *grant* permission you'd otherwise be asked for — it never auto-runs a
+  tool Claude wasn't already about to ask about.
 - The helper bypasses the system HTTP proxy (the buddy is on the LAN).
 - The token is a shared secret; treat `buddy.json` as private (it is not part of
   this repo).
