@@ -21,6 +21,7 @@ static TFT_eSprite *g_spr = nullptr; // off-screen double-buffer for the region
 static uint32_t g_loops = 0;         // # of clip switches (sync source)
 static uint32_t g_lastSwitch = 0;    // millis of the last clip switch
 static int g_tint = 1;               // 0 none, 1 warmer/orange, 2 pinker
+static int g_speed = 100;            // playback speed % (100 = native pace)
 
 // Subtle hue nudge for the character art (applied per drawn pixel).
 static uint16_t tintColor(uint16_t c) {
@@ -267,6 +268,8 @@ void Character::update() {
   if (g_spr)
     g_spr->pushSprite(REG_X, REG_Y); // flicker-free blit of the whole region
   uint32_t fd = (g_frameDelay > 0 ? (uint32_t)g_frameDelay : 80);
+  if (g_speed != 100 && g_speed >= 50)
+    fd = fd * 100 / g_speed; // scale the inter-frame delay (faster when intense)
   g_nextFrame = millis() + fd; // native frame pace -> smooth playback
   if (rc == 0) { // current GIF finished one pass
     auto it = g_states.find(g_cur);
@@ -299,5 +302,18 @@ void Character::update() {
 }
 
 uint32_t Character::loops() const { return g_loops; }
+
+void Character::setTint(int tint) {
+  if (tint >= 0 && tint <= 2)
+    g_tint = tint;
+}
+
+void Character::setSpeed(int pct) {
+  if (pct < 50)
+    pct = 50;
+  if (pct > 200)
+    pct = 200;
+  g_speed = pct;
+}
 
 } // namespace render
