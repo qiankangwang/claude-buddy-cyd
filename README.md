@@ -29,6 +29,10 @@ boards](#adapting-to-other-boards).
 > desktop app build used here, so this project reproduces the experience over a
 > self-hosted transport: a tiny HTTP server on the device plus Claude Code hooks
 > on the PC.
+>
+> _Unofficial, personal fan project — **not affiliated with or endorsed by
+> Anthropic.** "Clawd" is Anthropic's character; see [License &
+> credits](#license--credits)._
 
 ---
 
@@ -60,12 +64,16 @@ Two halves, joined only by a token-authenticated HTTP call on your LAN:
   and runs a small `WebServer`: `POST /event` (a JSON status+stats snapshot,
   authenticated with an `X-Buddy-Token` header) and `GET /` (health). It renders
   the Clawd GIF pack from on-board flash (LittleFS) with `AnimatedGIF`. It is
-  single-threaded and has **no on-device approval** — purely a display.
+  single-threaded; by default it's purely a display. (An **optional** opt-in adds
+  on-device *tap-to-approve* for a pending tool call — off unless you register the
+  `PermissionRequest` hook; see [tools/HOOKS.md](tools/HOOKS.md).)
 - **PC (`tools/buddy_hook.py`).** A single self-contained Python script that
   Claude Code runs on each hook event. It figures out what Claude is doing, reads
   the session transcript for the usage rollup, and `POST`s it to the device.
-  Every event is **non-blocking and fails open**: if the device is unreachable
-  the error is swallowed, so it can never slow down or break a Claude session.
+  Stats events are **non-blocking and fail open**: if the device is unreachable
+  the error is swallowed, so they can never slow down or break a Claude session.
+  (The optional approval hook briefly waits for your tap and also fails open — on
+  a timeout or an unreachable device it falls back to Claude's normal prompt.)
 
 The device is the source of truth for its own auth token; the PC just needs to
 know the device's IP + token (see [setup](#first-time-setup)).
@@ -78,20 +86,29 @@ know the device's IP + token (see [setup](#first-time-setup)).
 |---|---|---|
 | `sleep` (ASLEEP) | offline, or no activity yet | calm, dim |
 | `idle` (READY) | connected, no work running | resting |
-| `busy` (WORKING) | Claude is working | a rotating set of "working" clips + a whimsical verb ("Pondering…", "Brewing…") that changes in sync with the animation |
-| `attention` | a Claude **Notification** (it needs your input) | brief alert |
-| `celebrate` | a turn just finished (**Stop**) | brief celebration |
-| `heart` | a new session started (**SessionStart**) | brief hello |
+| `busy` (WORKING) | Claude is working | a rotating set of "working" clips + a whimsical verb ("Pondering…", "Brewing…") that changes in sync with the animation. Tool-aware: editing, running, reading, delegating… |
+| `attention` (NEEDS YOU) | the turn was handed back to you — a **Notification**, or **Stop** with nothing to do next | sticky alert; the LED nudge escalates the longer it waits |
+| `celebrate` (DONE!) | a turn just finished (**Stop**) | brief celebration |
+| `heart` (HELLO) | a new session started (**SessionStart**) | brief hello |
+| `error` (OOPS) | a tool reported an error | brief wince |
 | `dizzy` | triple-tap the screen | easter egg |
 
-`attention` / `celebrate` / `heart` are short reactions that play for a few
-seconds (and wake the screen if it's off), then fall back to the normal state.
+`celebrate` / `heart` / `error` are short reactions that play for a few seconds
+(and wake the screen if it's off), then fall back to the normal state.
+`attention` ("Needs you") is sticky until Claude resumes.
 
 **Stats card** (bottom): two headline figures — **Today** and **Total** tokens —
 over four compact counts: **Tools** (tool calls), **Turns** (assistant turns),
 **Sess** (sessions today), **Time** (current session duration). The numbers
 roll like an odometer when they change. A fuller, live-updating panel is under
 long-press → **Settings → Stats** (adds project name, uptime, free heap, IP).
+
+**Ambient cues.** The onboard RGB LED speaks a colour language — blue while
+working (cooler/quicker as the session heats up), amber when it needs you
+(escalating the longer it waits), red on error, green when a turn lands —
+silenced entirely under DND. Session intensity shows as 1–2 pips in the top bar.
+Set an optional daily token `"budget"` in `buddy.json` and the stats-card
+divider becomes a usage gauge (coral → amber near the cap → red over).
 
 ## Hardware
 
@@ -197,9 +214,11 @@ merged); if two machines push at once, the device shows whichever pushed last.
 - **Tap** while asleep — wake the screen.
 - **Triple-tap** — `dizzy` easter egg.
 - **Long-press (~1 s)** — open **Settings**: **Stats** (full live panel),
-  **Recalibrate** (3-point touch calibration; times out safely if you walk away),
-  **WiFi setup** (re-open the captive portal — keeps the saved password unless you
-  enter a new network), **Close**.
+  **DND** (silence the RGB LED and never wake the screen for a nudge),
+  **Brightness** (cycle the backlight 100 / 70 / 40 %), **Recalibrate** (3-point
+  touch calibration; times out safely if you walk away), **WiFi setup** (re-open
+  the captive portal — keeps the saved password unless you enter a new network),
+  **Close**. DND and brightness persist across reboots.
 - Auto **screen-off after 30 s** of calm; a touch or new Claude activity wakes it.
 
 ## How usage is counted
@@ -252,6 +271,19 @@ platformio.ini  build configuration
 
 ## License & credits
 
-- **Code:** MIT — see [LICENSE](LICENSE).
-- Based on **[anthropics/claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy)** (MIT) — the original Claude buddy this project ports, for both concept and event protocol.
-- With thanks also to [rullerzhou-afk/clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk) for the Clawd art (`data/clawd/`, © 2026 Anthropic, PBC, used under MIT), and [witnessmenow/ESP32-Cheap-Yellow-Display](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display) for CYD pinout notes.
+- **Code & tooling** (firmware + `tools/buddy_hook.py`): **MIT** — see
+  [LICENSE](LICENSE). © 2026 Qiankang Wang.
+- **Clawd character art** (`data/clawd/` and `assets/`): **not MIT.** "Clawd" is
+  the property of **Anthropic, PBC**; all rights reserved. The pixel sprites are
+  adapted from [rullerzhou-afk/clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk)
+  (source code AGPL-3.0; artwork all-rights-reserved). Swap in your own
+  black-background GIF pack to redistribute the project freely.
+- **Concept & event model:** inspired by Anthropic's maker reference
+  [claude-desktop-buddy](https://github.com/anthropics/claude-desktop-buddy)
+  (MIT), reproduced here over WiFi + Claude Code hooks instead of Bluetooth.
+- **CYD pinouts & community:** [witnessmenow/ESP32-Cheap-Yellow-Display](https://github.com/witnessmenow/ESP32-Cheap-Yellow-Display) (MIT).
+
+> **Disclaimer.** This is an unofficial, personal fan project. It is **not
+> affiliated with, sponsored by, or endorsed by Anthropic.** "Claude" and
+> "Clawd" are trademarks/IP of Anthropic, PBC, used here only to interoperate
+> with Claude Code for a non-commercial maker build.
