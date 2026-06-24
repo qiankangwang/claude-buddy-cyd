@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <esp_random.h>
+#include <esp_sleep.h>
 #include "hal/display.h" // pulls in TFT_eSPI (GFX free fonts come with LOAD_GFXFF)
 #include "hal/storage.h"
 #include "hal/touch.h"
@@ -106,16 +107,16 @@ struct Rect {
   int x, y, w, h;
 };
 static Rect denyBtn, approveBtn;
-// Settings: Stats / Quiet / Brightness / Recalibrate / WiFi setup / Close
-static Rect setBtns[6];
+// Settings: Stats / Quiet / Brightness / Recalibrate / WiFi / Power off / Close
+static Rect setBtns[7];
 
 static void computeButtons() {
   int W = display.tft().width(), H = display.tft().height();
   int bh = 56, m = 8;
   denyBtn = {m, H - bh - 6, (W - 3 * m) / 2, bh};
   approveBtn = {denyBtn.x + denyBtn.w + m, H - bh - 6, (W - 3 * m) / 2, bh};
-  int sy = 50, sbh = 36, gap = 8; // 6 rows fit 240x320 (50 + 6*44 = 314)
-  for (int i = 0; i < 6; i++)
+  int sy = 46, sbh = 32, gap = 6; // 7 rows fit 240x320 (46 + 7*38 = 312)
+  for (int i = 0; i < 7; i++)
     setBtns[i] = {20, sy + i * (sbh + gap), W - 40, sbh};
 }
 
@@ -545,9 +546,9 @@ static void renderSettings() {
   const char *qn = quietLevel == 0 ? "Off" : (quietLevel == 1 ? "LED off" : "DND");
   snprintf(quiet, sizeof(quiet), "Quiet: %s", qn);
   snprintf(bri, sizeof(bri), "Brightness: %d%%", brightPct);
-  const char *labels[6] = {"Stats", quiet,        bri,
-                           "Recalibrate", "WiFi setup", "Close"};
-  for (int i = 0; i < 6; i++)
+  const char *labels[7] = {"Stats", quiet, bri, "Recalibrate",
+                           "WiFi setup", "Power off", "Close"};
+  for (int i = 0; i < 7; i++)
     drawButton(setBtns[i], labels[i], (i == 1 && quietLevel > 0) ? 0x7B40 : C_FACE);
 }
 
@@ -583,8 +584,31 @@ static void renderAsk() {
   drawButton(approveBtn, "Allow", C_OK);
 }
 
+// Deep-sleep "power off": go dark and draw ~no power. Wakes on a screen touch
+// (XPT2046 PENIRQ on GPIO36 pulls low when touched) or the board's RST button;
+// either way the device cold-boots straight back into the dashboard.
+static void powerOff() {
+  TFT_eSPI &t = display.tft();
+  int W = t.width(), H = t.height();
+  led.off();
+  t.fillScreen(TFT_BLACK);
+  gtext("Powering off", W / 2, H / 2 - 12, &FreeSansBold18pt7b, C_CORAL,
+        TFT_BLACK, MC_DATUM);
+  gtext("tap screen or RST to wake", W / 2, H / 2 + 20, &FreeSans9pt7b, C_MUTED,
+        TFT_BLACK, MC_DATUM);
+  delay(1400); // let the message register before the screen cuts
+  // wait for the selecting tap to lift, or the held touch would wake us at once
+  for (uint32_t t0 = millis(); touch.rawPressed() && millis() - t0 < 15000;)
+    delay(10);
+  delay(200);
+  display.backlight(false);
+  led.off();
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)36, 0); // wake when PENIRQ goes low
+  esp_deep_sleep_start();                           // does not return
+}
+
 static void handleSettingsTap(int x, int y) {
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < 7; i++) {
     if (!inRect(setBtns[i], x, y))
       continue;
     if (i == 0) { // open the stats panel
@@ -611,7 +635,9 @@ static void handleSettingsTap(int x, int y) {
       settingsOpen = false;
       wifiConfirmOpen = true;
       renderWifiConfirm();
-    } else { // close
+    } else if (i == 5) { // power off -> deep sleep (tap screen / RST to wake)
+      powerOff();        // does not return
+    } else { // close (i == 6)
       settingsOpen = false;
       forceRedraw = true;
     }
@@ -685,6 +711,7 @@ void loop() {
     forceRedraw = true;
     if (!screenOn && !autoWakeBlocked()) { // DND: react silently, don't wake
       screenOn = true;
+      setCpuFrequencyMhz(240); // back to full speed on wake
       display.backlight(true);
       lastInteraction = now;
       wasTouched = true; // this wake isn't a tap
@@ -703,6 +730,7 @@ void loop() {
     settingsOpen = statsOpen = wifiConfirmOpen = false;
     if (!screenOn) {
       screenOn = true;
+      setCpuFrequencyMhz(240); // back to full speed on wake
       display.backlight(true);
     }
     lastInteraction = now;
@@ -760,6 +788,7 @@ void loop() {
       if (nudgeWake)
         lastNudgeWake = now; // fire the screen-wake just once per wait episode
       screenOn = true;
+      setCpuFrequencyMhz(240); // back to full speed on wake
       display.backlight(true);
       lastInteraction = now;
       forceRedraw = true;
@@ -907,6 +936,8 @@ void loop() {
     dimmed = false;
     display.backlight(false);
     led.off();
+    setCpuFrequencyMhz(80); // still tracking over WiFi, but at the WiFi-safe
+                            // minimum clock -> lower idle draw with screen off
   } else if (screenOn) {
     // pre-sleep fade: ease the backlight down in the last PRESLEEP_MS so the
     // cut-off isn't an abrupt blackout (also a subtle "about to sleep" cue).

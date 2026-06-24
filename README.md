@@ -220,8 +220,9 @@ merged); if two machines push at once, the device shows whichever pushed last.
   never auto-wakes, only your touch does)), **Brightness** (cycle the backlight
   100 / 70 / 40 %), **Recalibrate** (3-point touch calibration; times out safely
   if you walk away), **WiFi setup** (re-open the captive portal — keeps the saved
-  password unless you enter a new network), **Close**. Quiet level and brightness
-  persist across reboots.
+  password unless you enter a new network), **Power off** (deep sleep — screen,
+  LED and WiFi off; tap the screen or press the board's **RST** button to turn it
+  back on), **Close**. Quiet level and brightness persist across reboots.
 - Auto **screen-off after 30 s** of calm; a touch or new Claude activity wakes it.
 
 ## How usage is counted
@@ -244,9 +245,15 @@ merged); if two machines push at once, the device shows whichever pushed last.
 The main saver is the **30 s auto screen-off**: the backlight (by far the
 largest draw) and the LED switch off when idle, and a touch or new Claude
 activity wakes it instantly — with no change to how the animation looks when it's
-on. The WiFi radio is deliberately kept **awake** (no modem-sleep): on this
-hardware the radio power-save modes caused intermittent disconnects, and a steady
-link matters more than the small idle saving.
+on. While the screen is off the CPU also drops from 240 → **80 MHz** (the
+WiFi-safe minimum) to trim idle draw, then jumps back to full speed on wake. The
+WiFi radio is deliberately kept **awake** (no modem-sleep): on this hardware the
+radio power-save modes caused intermittent disconnects, and a steady link matters
+more than the small idle saving.
+
+For a true off, **Settings → Power off** puts the device into deep sleep
+(screen, LED and WiFi all off, ~microamps). It wakes — and cold-boots back into
+the dashboard — on a screen tap or a press of the board's **RST** button.
 
 ## Troubleshooting
 
