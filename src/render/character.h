@@ -21,6 +21,7 @@ public:
   uint32_t loops() const;           // # of GIF loops completed (for sync)
   void setTint(int tint);           // 0 none, 1 warmer/orange, 2 hotter/pinker
   void setSpeed(int pct);           // playback speed % (100 = native; >100 faster)
+  void nextClip();                  // jump to another clip now (event-driven switch)
 
 private:
   bool openCurrent();

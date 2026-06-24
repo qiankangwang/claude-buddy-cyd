@@ -321,4 +321,32 @@ void Character::setSpeed(int pct) {
   g_speed = pct;
 }
 
+// Switch to a different clip of the current (multi-clip) state right now, instead
+// of waiting for the dwell timer -- used to bind clip changes to Claude's live
+// actions. No-op for single-clip states (the running clip just keeps looping).
+void Character::nextClip() {
+  auto it = g_states.find(g_cur);
+  if (it == g_states.end() || it->second.size() <= 1)
+    return;
+  int sz = (int)it->second.size();
+  int nxt = g_idx;
+  for (int guard = 0; guard < 32; guard++) {
+    nxt = (int)(esp_random() % (uint32_t)sz);
+    if (nxt != g_idx && nxt != g_hist[1]) // avoid immediate + 1-back repeat
+      break;
+  }
+  g_hist[1] = g_hist[0];
+  g_hist[0] = nxt;
+  g_idx = nxt;
+  g_lastSwitch = millis();
+  g_dwell = SWITCH_INTERVAL_MS + (esp_random() % SWITCH_JITTER_MS);
+  if (g_open) {
+    gif.close();
+    g_open = false;
+  }
+  openCurrentOrFallback();
+  g_nextFrame = millis();
+  g_loops++; // keep the verb/sync counter in step with the switch
+}
+
 } // namespace render
