@@ -46,6 +46,10 @@ struct AppState {
   uint32_t askId = 0;      // bumps on each /ask
   String decision;         // "allow"/"deny" once the user taps; "" = undecided
   uint32_t decidedId = 0;  // the askId the decision belongs to
+  // host timestamp (ms) of the last APPLIED /event. Async hooks can deliver out
+  // of order, so we drop any event older than this -> a late PostToolUse can't
+  // re-assert "running" after the Stop that already ended the turn.
+  long long lastTs = 0;
   bool dirty = true;       // renderer should repaint
 };
 
