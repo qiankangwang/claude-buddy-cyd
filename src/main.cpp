@@ -809,7 +809,8 @@ void loop() {
       if (nudgeWake)
         lastNudgeWake = now; // fire the screen-wake just once per wait episode
       screenOn = true;
-      setCpuFrequencyMhz(240); // back to full speed on wake
+      setCpuFrequencyMhz(240);     // back to full speed on wake
+      net::server.nudgeReconnect(); // if we dozed offline, start reconnecting now
       display.backlight(true);
       lastInteraction = now;
       forceRedraw = true;
