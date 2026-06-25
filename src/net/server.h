@@ -66,6 +66,8 @@ public:
   AppState &state();
   void wifiPortal();       // open config portal WITHOUT erasing saved creds
                            // (keeps the old password unless you enter a new one)
+  void nudgeReconnect();   // on a screen wake: if offline, kick a fast reconnect
+                           // burst (modem-sleep makes idle drops more likely)
 };
 
 extern Server server;
