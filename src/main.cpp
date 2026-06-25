@@ -794,8 +794,11 @@ void loop() {
     sessionStart = 0;
   prevTotal = s.total;
 
-  int16_t tx, ty;
-  bool t = touch.read(tx, ty);
+  // While asleep, skip the full (filtered) touch read -- the wake check below
+  // uses the lighter rawPressed(), so this drops a second SPI touch transaction
+  // from every idle loop.
+  int16_t tx = 0, ty = 0;
+  bool t = screenOn ? touch.read(tx, ty) : false;
 
   // ---- asleep: a touch, Claude starting work, or an escalated "your turn"
   //      nudge wakes us (once per wait, unless DND); else stay dark ----
@@ -816,7 +819,9 @@ void loop() {
     } else {
       led.off(); // screen is dark -> keep the LED off too (no RGB while asleep)
       wasTouched = false;
-      delay(10);
+      // idle throttle: ~25 Hz is plenty to catch a tap or an incoming event,
+      // and runs the (otherwise idle) loop body 4x less often than before
+      delay(40);
       return;
     }
   }
