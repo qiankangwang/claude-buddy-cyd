@@ -95,7 +95,7 @@ static uint32_t lastNudgeWake = 0; // throttle escalated screen wakes
 // waitId) re-arms the full escalation.
 static bool waitAcked = false;
 // Idle micro-behaviour: gently rotate a friendly line while standing by.
-static const char *IDLE_MSGS[] = {"Ready when you are", "All caught up",
+static const char *IDLE_MSGS[] = {"Ready for you", "All caught up",
                                   "Standing by", "At your service",
                                   "Idle \xE2\x80\x94 tap me"};
 static const int N_IDLE = sizeof(IDLE_MSGS) / sizeof(IDLE_MSGS[0]);
