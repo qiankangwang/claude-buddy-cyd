@@ -12,6 +12,7 @@ static AppState g_state;
 static WebServer http(80);
 static std::function<void(const String &)> g_portalCb;
 static String g_token;
+static uint8_t g_fastRetries = 0; // queued fast reconnect attempts after a wake
 
 // Reject requests without a matching X-Buddy-Token (when a token is set).
 static bool authed() {
@@ -124,9 +125,11 @@ void Server::begin(std::function<void(const String &)> onPortal) {
   g_state.wifiUp = ok;
   if (ok) {
     WiFi.setAutoReconnect(true);
-    WiFi.setSleep(false); // keep the radio awake — modem-sleep was causing
-                          // intermittent drops/deauths; a steady link matters
-                          // more here than the small idle-power saving
+    WiFi.setSleep(true); // modem-sleep (WIFI_PS_MIN_MODEM): the radio dozes
+                         // between DTIM beacons to cut idle power. It can drop the
+                         // link on some APs, so we recover aggressively -- the
+                         // reconnect ladder in loop() plus nudgeReconnect(), which
+                         // fires a fast burst whenever the screen is woken.
     g_state.ip = WiFi.localIP().toString();
     if (MDNS.begin("claude-cyd"))
       MDNS.addService("http", "tcp", 80);
@@ -186,22 +189,34 @@ void Server::loop() {
   // ---- link is down: drive the reconnect ourselves ----
   if (downSince == 0)
     downSince = now;
-  if (now - downSince < 40000) {
-    // first 40s: gentle nudge every 10s (let each attempt finish before retrying)
-    if (now - lastKick > 10000) {
-      lastKick = now;
-      WiFi.reconnect();
-    }
-  } else {
-    // still stuck: hard-restart the supplicant every 20s, reusing the stored
-    // credentials -- this unsticks cases where reconnect() alone keeps failing
-    if (now - lastKick > 20000) {
-      lastKick = now;
+  uint32_t since = now - downSince;
+  // a screen wake (nudgeReconnect) primes a short fast burst; otherwise the
+  // normal cadence -- reconnect() for the first 40s, full supplicant restart
+  // after that to unstick cases where reconnect() alone keeps failing.
+  uint32_t interval = g_fastRetries ? 3000 : (since < 40000 ? 10000 : 20000);
+  if (now - lastKick >= interval) {
+    lastKick = now;
+    if (g_fastRetries == 0 && since >= 40000) {
       WiFi.disconnect(true, false); // radio off, KEEP saved SSID/pass
       WiFi.mode(WIFI_STA);
       WiFi.begin(); // reconnect using the credentials saved in NVS
+    } else {
+      WiFi.reconnect();
     }
+    if (g_fastRetries)
+      g_fastRetries--;
   }
+}
+
+// Called on a screen wake. With modem-sleep on, the link is likelier to have
+// dropped while idle; if we're offline, kick an immediate reconnect and queue a
+// few fast follow-ups (the loop() burst) so it's usually back by the time the
+// user looks at it.
+void Server::nudgeReconnect() {
+  if (WiFi.status() == WL_CONNECTED)
+    return;
+  WiFi.reconnect();
+  g_fastRetries = 3;
 }
 
 AppState &Server::state() { return g_state; }

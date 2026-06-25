@@ -250,11 +250,13 @@ merged); if two machines push at once, the device shows whichever pushed last.
 The main saver is the **30 s auto screen-off**: the backlight (by far the
 largest draw) and the LED switch off when idle, and a touch or new Claude
 activity wakes it instantly — with no change to how the animation looks when it's
-on. While the screen is off the CPU also drops from 240 → **80 MHz** (the
-WiFi-safe minimum) to trim idle draw, then jumps back to full speed on wake. The
-WiFi radio is deliberately kept **awake** (no modem-sleep): on this hardware the
-radio power-save modes caused intermittent disconnects, and a steady link matters
-more than the small idle saving.
+on. While the screen is off the CPU drops from 240 → **80 MHz**, and the idle
+loop throttles to ~25 Hz, to trim idle draw; both jump back on wake. The **WiFi
+radio uses modem-sleep** (it dozes between beacons) to cut idle power too. Because
+power-save can drop the link on some APs, reconnection is aggressive: a ladder in
+the background (`reconnect()` → full supplicant restart) **plus** a fast burst
+fired the moment you wake the screen — so if it dozed off-network it's usually
+back by the time you're looking at it.
 
 For a true off, **Settings → Power off** puts the device into deep sleep
 (screen, LED and WiFi all off, ~microamps). It wakes — and cold-boots back into
