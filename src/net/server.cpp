@@ -135,25 +135,60 @@ void Server::begin(std::function<void(const String &)> onPortal) {
 void Server::loop() {
   if (g_state.wifiUp)
     http.handleClient();
-  // Keep link state + IP live: WiFi can drop/reconnect or renew its DHCP lease
-  // after boot. Without this, wifiUp/ip stay latched at their boot values, so
-  // the device shows a green "READY" link while offline and may report a stale
-  // IP. (The HTTP server was begun at boot; handleClient resumes on reconnect.)
+  // Keep link state + IP live AND actively drive reconnection. ESP32's built-in
+  // auto-reconnect (set in begin()) usually re-joins on its own, but it can wedge
+  // after an AP reboot or a long outage and never come back -- the "link goes red
+  // and stays red" case. So when we see the link down we nudge it ourselves, and
+  // escalate to a full supplicant restart if it stays stuck.
   static uint32_t lastChk = 0;
+  static uint32_t downSince = 0; // millis the link first went down (0 = up)
+  static uint32_t lastKick = 0;  // throttle reconnect attempts
   uint32_t now = millis();
-  if (now - lastChk > 2000) {
-    lastChk = now;
-    bool up = (WiFi.status() == WL_CONNECTED);
-    if (up != g_state.wifiUp) {
-      g_state.wifiUp = up;
+  if (now - lastChk < 2000)
+    return;
+  lastChk = now;
+
+  bool up = (WiFi.status() == WL_CONNECTED);
+  if (up != g_state.wifiUp) {
+    g_state.wifiUp = up;
+    g_state.dirty = true;
+    if (up) {
+      // just re-joined: refresh IP and re-announce mDNS (the IP may have changed
+      // across the outage, which would otherwise leave a stale mDNS record)
+      g_state.ip = WiFi.localIP().toString();
+      MDNS.end();
+      if (MDNS.begin("claude-cyd"))
+        MDNS.addService("http", "tcp", 80);
+    }
+  }
+
+  if (up) {
+    downSince = 0;
+    String ip = WiFi.localIP().toString();
+    if (ip != g_state.ip) {
+      g_state.ip = ip;
       g_state.dirty = true;
     }
-    if (up) {
-      String ip = WiFi.localIP().toString();
-      if (ip != g_state.ip) {
-        g_state.ip = ip;
-        g_state.dirty = true;
-      }
+    return;
+  }
+
+  // ---- link is down: drive the reconnect ourselves ----
+  if (downSince == 0)
+    downSince = now;
+  if (now - downSince < 40000) {
+    // first 40s: gentle nudge every 10s (let each attempt finish before retrying)
+    if (now - lastKick > 10000) {
+      lastKick = now;
+      WiFi.reconnect();
+    }
+  } else {
+    // still stuck: hard-restart the supplicant every 20s, reusing the stored
+    // credentials -- this unsticks cases where reconnect() alone keeps failing
+    if (now - lastKick > 20000) {
+      lastKick = now;
+      WiFi.disconnect(true, false); // radio off, KEEP saved SSID/pass
+      WiFi.mode(WIFI_STA);
+      WiFi.begin(); // reconnect using the credentials saved in NVS
     }
   }
 }
