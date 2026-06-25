@@ -238,6 +238,11 @@ def main():
         data = json.load(sys.stdin)
     except Exception:
         return 0
+    # host timestamp (ms) stamped at hook entry. Claude Code invokes hooks in
+    # event order, but they run async and their HTTP posts can arrive reordered,
+    # so the device uses this to drop a stale arrival (e.g. a late PostToolUse
+    # that would otherwise re-assert "running" after the Stop that ended a turn).
+    ev_ts = int(time.time() * 1000)
     evt = data.get("hook_event_name", "")
     try:
         ip, tok = _cfg()
@@ -309,7 +314,7 @@ def main():
 
     try:
         payload = dict(extra, total=total, running=running, msg=msg[:24],
-                       waiting=waiting, burst=burst, agents=agents)
+                       waiting=waiting, burst=burst, agents=agents, ts=ev_ts)
         bud = _budget()
         if bud:
             payload["budget"] = bud

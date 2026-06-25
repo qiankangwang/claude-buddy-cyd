@@ -36,6 +36,17 @@ static void handleEvent() {
     return;
   }
   AppState &s = g_state;
+  // Drop out-of-order arrivals (async hooks can reorder): an event stamped older
+  // than the last one we applied must not clobber newer state -- this is what
+  // kept "running" pinned after a turn ended (a late PostToolUse landing after
+  // Stop). Events without a ts (older hooks) are always applied.
+  long long ts = doc["ts"] | (long long)0;
+  if (ts != 0 && ts < s.lastTs) {
+    http.send(200, "application/json", "{\"ok\":true,\"stale\":true}");
+    return;
+  }
+  if (ts > s.lastTs)
+    s.lastTs = ts;
   s.total = doc["total"] | s.total;
   s.running = doc["running"] | 0;
   if (doc["msg"].is<const char *>())
