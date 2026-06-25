@@ -479,7 +479,9 @@ static void renderStatic(const char *st) {
   // static -- the animation stays in the region above it -- so no per-frame
   // repaint is needed, which is what used to make the button flicker).
   if (!strcmp(st, "attention") || !strcmp(st, "notification")) {
-    drawButton(ackBtn, "Got it", C_OK);
+    // coral fill so it sits in the warm needs-you palette (the brand accent)
+    // rather than the out-of-place Allow-green it used before
+    drawButton(ackBtn, "Got it", C_CORAL);
     return;
   }
   int chh = H - cy - 6;
