@@ -46,7 +46,13 @@ static bool screenOn = true, forceRedraw = false, wasTouched = false, haveChar =
 // longer than TAP_GAP_MS restarts the count, so it's a real fast triple-tap.
 static uint32_t lastTap = 0;
 static int tapCount = 0;
-#define TAP_GAP_MS 400
+#define TAP_GAP_MS 550 // window for counting a fast triple-tap (was 400)
+#define LONG_PRESS_MS 650 // hold time to open Settings (was 900 -> snappier)
+// Resistive panels briefly drop below the pressure floor mid-press; without a
+// grace that reads as a release, so a held finger looks like a burst of fresh
+// taps and the long-press timer never accumulates. Treat the panel as still
+// touched for this long after the last solid contact (debounced release).
+#define TOUCH_RELEASE_MS 80
 
 // rotating "busy" verb, advanced in sync with the character animation loop
 static const char *WHIMSY[] = {
@@ -170,6 +176,38 @@ static void gtextClamp(const char *s, int x, int y, const GFXfont *f, uint16_t f
   gtext((str + "...").c_str(), x, y, f, fg, bg, datum);
 }
 
+// Flicker-free text update. The CYD has no double buffer, so the usual on-screen
+// fillRect(bg)+drawString briefly shows the cleared cell between erase and redraw
+// -- that blank frame is the "一闪一闪" flicker. Here we render the cell into an
+// off-screen sprite (RAM) and blit it in ONE pass, so old text swaps to new with
+// no blank in between. (rx,ry,w,h) = the on-screen cell to repaint; the string is
+// positioned by `datum` at absolute (tx,ty) and clamped with an ellipsis to maxW.
+static void blitText(int rx, int ry, int w, int h, const char *s, int tx, int ty,
+                     const GFXfont *f, uint16_t fg, uint16_t bg, uint8_t datum,
+                     int maxW) {
+  String str(s); // clamp to maxW with a trailing ellipsis (same rule as gtextClamp)
+  if (textW(str.c_str(), f) > maxW) {
+    while (str.length() > 1 && textW((str + "...").c_str(), f) > maxW)
+      str.remove(str.length() - 1);
+    str += "...";
+  }
+  TFT_eSprite spr(&display.tft());
+  spr.setColorDepth(16);
+  if (!spr.createSprite(w, h)) {
+    // not enough heap for the sprite -> fall back to direct erase+draw (may flicker)
+    display.tft().fillRect(rx, ry, w, h, bg);
+    gtext(str.c_str(), tx, ty, f, fg, bg, datum);
+    return;
+  }
+  spr.fillSprite(bg);
+  spr.setFreeFont(f);
+  spr.setTextDatum(datum);
+  spr.setTextColor(fg, bg);
+  spr.drawString(str.c_str(), tx - rx, ty - ry); // translate anchor into sprite space
+  spr.pushSprite(rx, ry);
+  spr.deleteSprite();
+}
+
 static String loadOrCreateToken() {
   char buf[17];
   if (storage.getBytes("token", buf, 16)) {
@@ -182,6 +220,90 @@ static String loadOrCreateToken() {
   out[16] = 0;
   storage.putBytes("token", out, 16);
   return String(out);
+}
+
+// ---- stats persistence (survive an unplug) ---------------------------------
+// The PC hook is the source of truth: it recomputes today/all-time from the
+// transcripts and re-pushes a full snapshot on the next event. So the device
+// only needs a *display cache* -- mirror the last snapshot to NVS and restore it
+// on boot, so a replug shows the last numbers immediately instead of zeros until
+// Claude next does something. The first /event after boot overwrites these with
+// the authoritative totals, so the device never accumulates locally and a
+// restore can't double-count. Persisted counters only (running/waiting stay 0).
+#define STATS_MAGIC 0xC4D50001u  // bump the low word to invalidate old blobs
+#define STATS_SAVE_MS 60000UL    // min interval between NVS commits (flash wear)
+struct StatsBlob {
+  uint32_t magic;
+  long long tokensAll;
+  long tokens;
+  long budget;
+  int total, tools, turns, sessions;
+  char project[28]; // hook caps the project name at 24 chars
+};
+
+static void fillStatsBlob(StatsBlob &b) {
+  net::AppState &s = net::server.state();
+  memset(&b, 0, sizeof(b)); // zero padding too, so memcmp is stable
+  b.magic = STATS_MAGIC;
+  b.tokensAll = s.tokensAll;
+  b.tokens = s.tokens;
+  b.budget = s.budget;
+  b.total = s.total;
+  b.tools = s.tools;
+  b.turns = s.turns;
+  b.sessions = s.sessions;
+  strncpy(b.project, s.project.c_str(), sizeof(b.project) - 1);
+}
+
+// Restore the cached snapshot into AppState (called once at boot).
+static void restoreStats() {
+  StatsBlob b = {};
+  if (!storage.getBytes("stats", &b, sizeof(b)) || b.magic != STATS_MAGIC) {
+    Serial.println("[stats] no saved snapshot (first boot or version bump)");
+    return; // no valid blob (first boot, or a version bump invalidated it)
+  }
+  net::AppState &s = net::server.state();
+  s.tokensAll = b.tokensAll;
+  s.tokens = b.tokens;
+  s.budget = b.budget;
+  s.tools = b.tools;
+  s.turns = b.turns;
+  s.sessions = b.sessions;
+  s.project = b.project;
+  // Show the stats card on boot whenever we have real history -- even if the last
+  // saved event was a SessionEnd (total=0), which would otherwise make stateName()
+  // fall back to "asleep" and hide the very numbers we just restored. The next
+  // hook event overwrites total with the live value.
+  bool haveData = b.tokensAll > 0 || b.tokens > 0 || b.tools > 0 || b.turns > 0;
+  s.total = (b.total > 0) ? b.total : (haveData ? 1 : 0);
+  Serial.printf("[stats] restored tokAll=%lld today=%ld tools=%d turns=%d sess=%d total=%d\n",
+                (long long)s.tokensAll, s.tokens, s.tools, s.turns, s.sessions, s.total);
+}
+
+// Write the snapshot to NVS, but only when a counter actually changed -- NVS has
+// finite write endurance and the hook can fire many events a minute, so a blind
+// write-per-event would wear the flash. force=true bypasses the time throttle
+// (used at natural pauses: screen-off / power-off) but still skips a no-op write.
+static bool saveStatsIfChanged(bool force) {
+  static StatsBlob last; // zero-initialised: magic 0 != STATS_MAGIC -> first
+                         // real call always differs and commits once.
+  static uint32_t lastSaveMs = 0;
+  StatsBlob cur;
+  fillStatsBlob(cur);
+  if (memcmp(&cur, &last, sizeof(cur)) == 0)
+    return false; // nothing new to persist
+  uint32_t now = millis();
+  if (!force && lastSaveMs && now - lastSaveMs < STATS_SAVE_MS)
+    return false; // throttle: at most one commit per STATS_SAVE_MS
+  if (!storage.putBytes("stats", &cur, sizeof(cur))) {
+    Serial.println("[stats] NVS write FAILED");
+    return false;
+  }
+  last = cur;
+  lastSaveMs = now;
+  Serial.printf("[stats] saved tokAll=%lld today=%ld tools=%d total=%d (force=%d)\n",
+                (long long)cur.tokensAll, cur.tokens, cur.tools, cur.total, force ? 1 : 0);
+  return true;
 }
 
 static const char *stateName(uint32_t now) {
@@ -365,12 +487,12 @@ static bool tickTowardI(int &d, int target) {
   return true;
 }
 
-// Clear + draw one centered value cell (used for the initial render and the
-// per-frame counter animation; cleared so a shrinking value leaves no ghost).
+// Draw one centered value cell. Rendered via an off-screen sprite (blitText) so a
+// rolling counter updates without flashing its cleared background each frame.
 static void drawCell(int cx, int y, const char *v, uint16_t col,
                      const GFXfont *vf, int voff, int maxW) {
-  display.tft().fillRect(cx - maxW / 2, y + voff - 1, maxW, 20, C_CARD);
-  gtextClamp(v, cx, y + voff, vf, col, C_CARD, TC_DATUM, maxW);
+  blitText(cx - maxW / 2, y + voff - 1, maxW, 20, v, cx, y + voff, vf, col,
+           C_CARD, TC_DATUM, maxW);
 }
 
 // Draw the six value cells from the animated counters (labels are drawn once by
@@ -449,11 +571,10 @@ static const char *headlineText(const char *st) {
 // Repaint ONLY the headline band inside the card (so rotating the busy verb
 // doesn't flicker the stats grid, which refreshes on its own data changes).
 static void renderHeadline(const char *st) {
-  TFT_eSPI &t = display.tft();
-  int W = t.width(), cy = REG_Y + REG_H + 4;
-  t.fillRect(12, cy + 5, W - 24, 28, C_CARD); // clear the headline band only
-  gtextClamp(headlineText(st), W / 2, cy + 18, &FreeSansBold12pt7b, C_TEXT,
-             C_CARD, MC_DATUM, W - 32);
+  int W = display.tft().width(), cy = REG_Y + REG_H + 4;
+  // sprite-blit the headline band so the rotating verb/idle line never flashes.
+  blitText(12, cy + 5, W - 24, 28, headlineText(st), W / 2, cy + 18,
+           &FreeSansBold12pt7b, C_TEXT, C_CARD, MC_DATUM, W - 32);
 }
 
 // Home screen: top status bar + (character region) + bottom stats card.
@@ -520,14 +641,20 @@ static void renderStats(bool full) {
   }
   // label left, value right-aligned to the screen edge and clamped so long
   // values (IP / project / big token counts) can't run off the right side.
-  int lx = 18, rx = W - 18, y = 48, dy = 22, vMax = W - 18 - 108;
+  // dy=20 (not 22): 12 rows + the "tap to close" hint must share 320px. At 22 the
+  // last row (IP, y=290) sits so low its value-clear band overlaps the hint and
+  // eats "to close" -> only "tap" survives. Tightening the pitch lifts IP to 268.
+  int lx = 18, rx = W - 18, y = 48, dy = 20, vMax = W - 18 - 108;
   char b[24];
   auto row = [&](const char *k, const String &v) {
-    t.fillRect(104, y - 13, W - 104 - 6, 20, TFT_BLACK); // clear value cell only
-    if (full)
-      gtext(k, lx, y, &FreeSans9pt7b, C_MUTED, TFT_BLACK, TL_DATUM);
-    gtextClamp(v.c_str(), rx, y, &FreeSansBold9pt7b, C_TEXT, TFT_BLACK,
-               TR_DATUM, vMax);
+    // Sprite-blit the value cell (TOP datum, glyph at y..y+~17) so a live refresh
+    // swaps the number in one pass instead of flashing the cleared band.
+    blitText(104, y - 1, W - 104 - 6, 20, v.c_str(), rx, y, &FreeSansBold9pt7b,
+             C_TEXT, TFT_BLACK, TR_DATUM, vMax);
+    // Redraw the label AFTER the value: the value cell starts at x=104 and its
+    // sprite blacks out the right edge of longer labels like "All-time tok", so
+    // repaint the label on top to keep its tail (opaque -> in place, no flicker).
+    gtext(k, lx, y, &FreeSans9pt7b, C_MUTED, TFT_BLACK, TL_DATUM);
     y += dy;
   };
   fmtTok(s.tokens, b, sizeof(b));
@@ -608,6 +735,7 @@ static void powerOff() {
   TFT_eSPI &t = display.tft();
   int W = t.width(), H = t.height();
   led.off();
+  saveStatsIfChanged(true); // persist before deep sleep (wakes as a cold boot)
   t.fillScreen(TFT_BLACK);
   gtext("Powering off", W / 2, H / 2 - 12, &FreeSansBold18pt7b, C_CORAL,
         TFT_BLACK, MC_DATUM);
@@ -682,6 +810,20 @@ void setup() {
 
   net::server.setToken(loadOrCreateToken());
 
+  // restore the last stats snapshot so a replug shows the previous numbers
+  // immediately (the next hook event re-asserts the authoritative totals).
+  restoreStats();
+  // seed the odometer counters from the restored values so they read true at
+  // once instead of rolling up from zero on the first frame after WiFi connects.
+  {
+    net::AppState &s = net::server.state();
+    dToday = s.tokens;
+    dAll = s.tokensAll;
+    dTools = s.tools;
+    dTurns = s.turns;
+    dSess = s.sessions;
+  }
+
   TFT_eSPI &t = display.tft();
   t.fillScreen(TFT_BLACK);
   t.setTextDatum(MC_DATUM);
@@ -717,6 +859,11 @@ void loop() {
   uint32_t now = millis();
   net::server.loop();
   net::AppState &s = net::server.state();
+
+  // Mirror the latest counters to NVS (throttled + only-on-change) so an unplug
+  // restores them on the next boot. Runs before any early return below so it
+  // still ticks while the screen is asleep or a menu/panel is open.
+  saveStatsIfChanged(false);
 
   // ---- transient hook effect (attention/celebrate/heart): edge-trigger once
   //      per event; wakes the screen so a "needs you" / "done" isn't missed ----
@@ -798,7 +945,19 @@ void loop() {
   // uses the lighter rawPressed(), so this drops a second SPI touch transaction
   // from every idle loop.
   int16_t tx = 0, ty = 0;
-  bool t = screenOn ? touch.read(tx, ty) : false;
+  bool tRaw = screenOn ? touch.read(tx, ty) : false;
+  // Release debounce: ride through a brief mid-press pressure dropout (reusing the
+  // last solid coords) so a hold stays ONE continuous contact -- fixes long-press
+  // not registering and stops a single tap splitting into several.
+  static uint32_t lastContactMs = 0;
+  static int16_t heldX = 0, heldY = 0;
+  if (tRaw) { lastContactMs = now; heldX = tx; heldY = ty; }
+  bool t = tRaw;
+  if (screenOn && !tRaw && lastContactMs && now - lastContactMs < TOUCH_RELEASE_MS) {
+    t = true;
+    tx = heldX;
+    ty = heldY;
+  }
 
   // ---- asleep: a touch, Claude starting work, or an escalated "your turn"
   //      nudge wakes us (once per wait, unless DND); else stay dark ----
@@ -921,7 +1080,7 @@ void loop() {
   }
 
   // ---- long-press (hold) opens Settings ----
-  if (t && !longFired && now - pressStart > 900) {
+  if (t && !longFired && now - pressStart > LONG_PRESS_MS) {
     longFired = true;
     settingsOpen = true;
     lastInteraction = now;
@@ -966,6 +1125,7 @@ void loop() {
   if (screenOn && calm && idleFor > SCREEN_OFF_MS) {
     screenOn = false;
     dimmed = false;
+    saveStatsIfChanged(true); // checkpoint before going dark (likely unplug point)
     display.backlight(false);
     led.off();
     setCpuFrequencyMhz(80); // still tracking over WiFi, but at the WiFi-safe
