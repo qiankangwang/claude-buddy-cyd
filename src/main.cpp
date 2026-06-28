@@ -577,6 +577,20 @@ static void renderHeadline(const char *st) {
            &FreeSansBold12pt7b, C_TEXT, C_CARD, MC_DATUM, W - 32);
 }
 
+// Update ONLY the top-bar status dot + label in place (label via sprite so it
+// doesn't flash). Used on a state change that keeps the card layout, so we skip
+// the full renderStatic() repaint that briefly blanks the whole card. The label
+// band stops short of the intensity pips / WiFi dot, which update on their own.
+static void renderStatusBar(const char *st) {
+  TFT_eSPI &t = display.tft();
+  net::AppState &s = net::server.state();
+  int W = t.width();
+  t.fillCircle(13, 13, 5, stateColor(st));
+  blitText(26, 2, (W - 60) - 26, 24, stateLabel(st), 26, 14, &FreeSansBold9pt7b,
+           C_TEXT, TFT_BLACK, ML_DATUM, (W - 60) - 26);
+  t.fillCircle(W - 13, 13, 4, s.wifiUp ? 0x2DEA : 0x9000);
+}
+
 // Home screen: top status bar + (character region) + bottom stats card.
 static void renderStatic(const char *st) {
   TFT_eSPI &t = display.tft();
@@ -1151,22 +1165,36 @@ void loop() {
   //      fillRect repaint flashes, so we never do it for routine data updates).
   //      A data-only change (new event, same state) just refreshes the headline
   //      in place; the stat cells + budget bar roll on their own below. ----
+  // Repaint policy: a FULL renderStatic() blanks the top bar + whole card, which
+  // flashes -- acceptable when the layout actually changes (to/from the cardless
+  // needs-you screen) or on a forced redraw (wake, closing a panel), but NOT for a
+  // routine state change like idle<->working. Those keep the same card, so update
+  // only what differs (status dot+label, headline) in place via sprites: no blank
+  // frame, no flash.
   static String last = "?";
-  if (forceRedraw || last != st) {
+  auto cardLayout = [](const char *s) {
+    return strcmp(s, "attention") && strcmp(s, "notification");
+  };
+  bool firstDraw = (last == "?");
+  bool layoutChanged = firstDraw || (cardLayout(last.c_str()) != cardLayout(st));
+  if (forceRedraw || layoutChanged) {
     forceRedraw = false;
     s.dirty = false;
-    last = st;
-    renderStatic(st);
-    if (haveChar) {
-      render::character.setState(st);
-      lastLoops = render::character.loops(); // sync so it ticks on next switch
-    }
+    renderStatic(st); // genuine layout change / forced -> full repaint
+  } else if (last != st) {
+    s.dirty = false; // same card layout, just a state change -> in-place update
+    renderStatusBar(st);
+    renderHeadline(st);
   } else if (s.dirty) {
     s.dirty = false;
-    // the needs-you screen has no card, so skip the in-card headline repaint
-    if (strcmp(st, "attention") && strcmp(st, "notification"))
-      renderHeadline(st); // activity/project text changed -> in-place, no flash
+    if (cardLayout(st))
+      renderHeadline(st); // data-only change -> headline in place, no flash
   }
+  if (last != st && haveChar) { // sync the mascot clip on any state change
+    render::character.setState(st);
+    lastLoops = render::character.loops(); // sync so it ticks on next switch
+  }
+  last = st;
   if (haveChar)
     render::character.update();
 
