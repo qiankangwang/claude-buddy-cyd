@@ -7,18 +7,11 @@
 #include "hal/led.h"
 #include "render/character.h"
 #include "net/server.h"
+#include "ui/theme.h"
+#include "ui/text.h"
+#include "ui/widgets.h"
 
-// Palette (RGB565). Coral = Anthropic accent (#D97757). The character art is
-// warmed on-screen by render::tintColor (R x1.06, B x0.85); the raw #D97757
-// reads pinker than that, so the UI accent uses the SAME-tinted coral (~#E6774A)
-// so headline/number text matches the Clawd you actually see. (raw was 0xDBAA)
-#define C_CORAL 0xE3A8
-#define C_TEXT TFT_WHITE
-#define C_MUTED 0x8C71
-#define C_OK 0x256C   // refined green
-#define C_NO 0xC1C5   // muted red
-#define C_FACE 0x2966 // neutral button face (dark slate)
-#define C_CARD 0x10A3 // info-card fill (very dark slate)
+using namespace ui;
 
 static hal::Display display;
 static hal::Storage storage;
@@ -112,9 +105,6 @@ static int intensityTier(int burst, int agents) {
   return 0;
 }
 
-struct Rect {
-  int x, y, w, h;
-};
 static Rect denyBtn, approveBtn;
 static Rect ackBtn; // "Got it" pill on the needs-you screen (dismisses -> idle)
 // Settings: Stats / Quiet / Brightness / Recalibrate / WiFi / Power off / Close
@@ -132,80 +122,6 @@ static void computeButtons() {
   // so centre a roomy pill there as the dismiss call-to-action.
   int aw = 150, ah = 46, cardTop = REG_Y + REG_H;
   ackBtn = {(W - aw) / 2, cardTop + (H - cardTop - ah) / 2, aw, ah};
-}
-
-static bool inRect(const Rect &r, int x, int y) {
-  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
-}
-
-// Draw a string with a GFX free font (smoother than the built-in fonts).
-static void gtext(const char *s, int x, int y, const GFXfont *f, uint16_t fg,
-                  uint16_t bg, uint8_t datum) {
-  TFT_eSPI &t = display.tft();
-  t.setFreeFont(f);
-  t.setTextDatum(datum);
-  t.setTextColor(fg, bg);
-  t.drawString(s, x, y);
-}
-
-static void drawButton(const Rect &r, const char *label, uint16_t col) {
-  TFT_eSPI &t = display.tft();
-  t.fillRoundRect(r.x, r.y, r.w, r.h, 12, col);
-  t.drawRoundRect(r.x, r.y, r.w, r.h, 12, 0x4A69); // subtle light border
-  gtext(label, r.x + r.w / 2, r.y + r.h / 2, &FreeSansBold9pt7b, C_TEXT, col,
-        MC_DATUM);
-}
-
-// Pixel width of a string in a GFX font (selects the font as a side effect).
-static int textW(const char *s, const GFXfont *f) {
-  display.tft().setFreeFont(f);
-  return display.tft().textWidth(s);
-}
-
-// Like gtext, but truncates with a trailing ellipsis so it never exceeds maxW.
-static void gtextClamp(const char *s, int x, int y, const GFXfont *f, uint16_t fg,
-                       uint16_t bg, uint8_t datum, int maxW) {
-  if (textW(s, f) <= maxW) {
-    gtext(s, x, y, f, fg, bg, datum);
-    return;
-  }
-  String str(s);
-  while (str.length() > 1 &&
-         textW((str + "...").c_str(), f) > maxW)
-    str.remove(str.length() - 1);
-  gtext((str + "...").c_str(), x, y, f, fg, bg, datum);
-}
-
-// Flicker-free text update. The CYD has no double buffer, so the usual on-screen
-// fillRect(bg)+drawString briefly shows the cleared cell between erase and redraw
-// -- that blank frame is the "一闪一闪" flicker. Here we render the cell into an
-// off-screen sprite (RAM) and blit it in ONE pass, so old text swaps to new with
-// no blank in between. (rx,ry,w,h) = the on-screen cell to repaint; the string is
-// positioned by `datum` at absolute (tx,ty) and clamped with an ellipsis to maxW.
-static void blitText(int rx, int ry, int w, int h, const char *s, int tx, int ty,
-                     const GFXfont *f, uint16_t fg, uint16_t bg, uint8_t datum,
-                     int maxW) {
-  String str(s); // clamp to maxW with a trailing ellipsis (same rule as gtextClamp)
-  if (textW(str.c_str(), f) > maxW) {
-    while (str.length() > 1 && textW((str + "...").c_str(), f) > maxW)
-      str.remove(str.length() - 1);
-    str += "...";
-  }
-  TFT_eSprite spr(&display.tft());
-  spr.setColorDepth(16);
-  if (!spr.createSprite(w, h)) {
-    // not enough heap for the sprite -> fall back to direct erase+draw (may flicker)
-    display.tft().fillRect(rx, ry, w, h, bg);
-    gtext(str.c_str(), tx, ty, f, fg, bg, datum);
-    return;
-  }
-  spr.fillSprite(bg);
-  spr.setFreeFont(f);
-  spr.setTextDatum(datum);
-  spr.setTextColor(fg, bg);
-  spr.drawString(str.c_str(), tx - rx, ty - ry); // translate anchor into sprite space
-  spr.pushSprite(rx, ry);
-  spr.deleteSprite();
 }
 
 static String loadOrCreateToken() {
@@ -440,30 +356,6 @@ static const char *stateLabel(const char *st) {
   if (!strcmp(st, "heart")) return "HELLO";
   if (!strcmp(st, "idle")) return "READY";
   return "ASLEEP";
-}
-
-// Compact token count: 1.2M / 123k / 45 (bare number; the cell label gives units).
-static void fmtTok(long long t, char *out, size_t n) {
-  if (t >= 1000000) {
-    long long x = (t + 50000) / 100000; // tenths of a million, rounded
-    snprintf(out, n, "%lld.%lldM", x / 10, x % 10);
-  } else if (t >= 1000) {
-    long long x = (t + 50) / 100; // tenths of a thousand, rounded
-    snprintf(out, n, "%lld.%lldk", x / 10, x % 10);
-  } else {
-    snprintf(out, n, "%lld", t);
-  }
-}
-
-static void fmtDur(uint32_t ms, char *out, size_t n) {
-  uint32_t s = ms / 1000;
-  if (s < 60)
-    snprintf(out, n, "%lus", (unsigned long)s);
-  else if (s < 3600)
-    snprintf(out, n, "%lum", (unsigned long)(s / 60));
-  else
-    snprintf(out, n, "%luh%02lum", (unsigned long)(s / 3600),
-             (unsigned long)((s % 3600) / 60));
 }
 
 // Animated (eased) copies of the live counters, so a value rolls toward its new
@@ -810,6 +702,7 @@ void setup() {
   Serial.println("\n[CYD Buddy] WiFi + official Clawd character");
 
   display.begin();
+  ui::begin(display);
   storage.begin();
   touch.begin(display, storage);
   led.begin();
