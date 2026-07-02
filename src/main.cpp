@@ -48,6 +48,11 @@ static bool screenOn = true, forceRedraw = false, wasTouched = false, haveChar =
 // longer than TAP_GAP_MS restarts the count, so it's a real fast triple-tap.
 static uint32_t lastTap = 0;
 static int tapCount = 0;
+// swipe detection: where the current contact started (screen coords)
+static int16_t pressX = 0, pressY = 0;
+#define SWIPE_MIN_DX 60  // horizontal travel to count as a card swipe
+#define SWIPE_MAX_DY 45  // keep it deliberate: mostly-horizontal only
+#define SWIPE_MAX_MS 700 // a slow drag is not a swipe
 #define TAP_GAP_MS 550 // window for counting a fast triple-tap (was 400)
 #define LONG_PRESS_MS 650 // hold time to open Settings (was 900 -> snappier)
 // Resistive panels briefly drop below the pressure floor mid-press; without a
@@ -341,6 +346,8 @@ void loop() {
   if (tap) {
     pressStart = now;
     longFired = false;
+    pressX = tx; // remember where the contact began, for swipe detection
+    pressY = ty;
   }
 
   // ---- a full-screen mode left idle past the timeout closes back to home,
@@ -440,6 +447,19 @@ void loop() {
     return;
   }
 
+  // ---- horizontal swipe on the home screen pages the bottom card
+  //      (stats <-> trends); fires on release so it can't double as a tap ----
+  if (!t && wasTouched && !longFired) {
+    int dx = heldX - pressX, dy = heldY - pressY;
+    if (abs(dx) >= SWIPE_MIN_DX && abs(dy) <= SWIPE_MAX_DY &&
+        now - pressStart < SWIPE_MAX_MS) {
+      setCard(card() ^ 1); // two pages: either direction toggles
+      tapCount = 0;        // the swipe's touch-down shouldn't count toward dizzy
+      lastInteraction = now;
+      forceRedraw = true;  // full repaint swaps the card cleanly
+    }
+  }
+
   // ---- "Got it": tap the pill on the needs-you screen to acknowledge this
   //      episode (calm the LED, stop further nudges) without replying to Claude
   if (tap && !waitAcked && inRect(ackBtn, tx, ty)) {
@@ -475,6 +495,7 @@ void loop() {
   if (screenOn && calm && idleFor > SCREEN_OFF_MS) {
     screenOn = false;
     dimmed = false;
+    setCard(0); // wake back up on the familiar stats page
     saveStatsIfChanged(storage, true); // checkpoint before going dark (likely unplug point)
     historySaveIfChanged(storage, true);
     display.backlight(false);

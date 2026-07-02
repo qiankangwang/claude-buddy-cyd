@@ -1,5 +1,6 @@
 #include "home.h"
 #include "layout.h"
+#include "trends.h"
 #include "app/ctx.h"
 #include "app/activity.h"
 #include "net/server.h"
@@ -18,6 +19,11 @@ static const int REG_Y = render::REG_Y, REG_H = render::REG_H; // single source
 // rotating "busy" verb / idle line indices, advanced by the loop's sync signals
 static int verbIdx = 0;
 static int idleIdx = 0;
+
+// bottom-card page: 0 = stats, 1 = trends
+static int g_card = 0;
+int card() { return g_card; }
+void setCard(int c) { g_card = (c != 0) ? 1 : 0; }
 
 // Animated (eased) copies of the live counters, so a value rolls toward its new
 // total like an odometer instead of snapping.
@@ -120,6 +126,8 @@ static const char *headlineText(const char *st) {
 }
 
 void renderHeadline(const char *st) {
+  if (g_card != 0)
+    return; // the headline band belongs to the stats card page
   int W = tft().width(), cy = REG_Y + REG_H + 4;
   // sprite-blit the headline band so the rotating verb/idle line never flashes.
   blitText(12, cy + 5, W - 24, 28, headlineText(st), W / 2, cy + 18,
@@ -161,6 +169,10 @@ void renderStatic(const char *st) {
     // coral fill so it sits in the warm needs-you palette (the brand accent)
     // rather than the out-of-place Allow-green it used before
     drawButton(ackBtn, "Got it", C_CORAL);
+    return;
+  }
+  if (g_card == 1) { // trends page: same card slot, different content
+    renderTrends(true);
     return;
   }
   int chh = H - cy - 6;
@@ -214,7 +226,13 @@ void rollStats(uint32_t now, const char *st) {
     ch = true;
   }
   // no card on the needs-you screen -> don't paint stat cells into the void
-  if (ch && strcmp(st, "attention") && strcmp(st, "notification")) {
+  if (!strcmp(st, "attention") || !strcmp(st, "notification"))
+    return;
+  if (g_card == 1) { // trends page: keep today's bar growing instead
+    renderTrends(false);
+    return;
+  }
+  if (ch) {
     int W = tft().width();
     drawStatValues(W, REG_Y + REG_H + 4, false);
     if (s.budget > 0)
