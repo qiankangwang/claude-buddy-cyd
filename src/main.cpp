@@ -48,8 +48,11 @@ static bool screenOn = true, forceRedraw = false, wasTouched = false, haveChar =
 // longer than TAP_GAP_MS restarts the count, so it's a real fast triple-tap.
 static uint32_t lastTap = 0;
 static int tapCount = 0;
-// swipe detection: where the current contact started (screen coords)
+// swipe detection: where the current contact started (screen coords), and
+// whether it started on the home screen (a release after closing a menu must
+// not read as a home-screen swipe or a pet)
 static int16_t pressX = 0, pressY = 0;
+static bool pressOnHome = false;
 #define SWIPE_MIN_DX 60  // horizontal travel to count as a card swipe
 #define SWIPE_MAX_DY 45  // keep it deliberate: mostly-horizontal only
 #define SWIPE_MAX_MS 700 // a slow drag is not a swipe
@@ -346,8 +349,9 @@ void loop() {
   if (tap) {
     pressStart = now;
     longFired = false;
-    pressX = tx; // remember where the contact began, for swipe detection
+    pressX = tx; // remember where the contact began, for swipe/pet detection
     pressY = ty;
+    pressOnHome = !(settingsOpen || statsOpen || wifiConfirmOpen || askOpen);
   }
 
   // ---- a full-screen mode left idle past the timeout closes back to home,
@@ -447,9 +451,9 @@ void loop() {
     return;
   }
 
-  // ---- horizontal swipe on the home screen pages the bottom card
-  //      (stats <-> trends); fires on release so it can't double as a tap ----
-  if (!t && wasTouched && !longFired) {
+  // ---- release gestures on the home screen: a mostly-horizontal swipe pages
+  //      the bottom card (stats <-> trends); a still tap on Clawd is a pet ----
+  if (!t && wasTouched && !longFired && pressOnHome) {
     int dx = heldX - pressX, dy = heldY - pressY;
     if (abs(dx) >= SWIPE_MIN_DX && abs(dy) <= SWIPE_MAX_DY &&
         now - pressStart < SWIPE_MAX_MS) {
@@ -457,6 +461,13 @@ void loop() {
       tapCount = 0;        // the swipe's touch-down shouldn't count toward dizzy
       lastInteraction = now;
       forceRedraw = true;  // full repaint swaps the card cleanly
+    } else if (abs(dx) < 12 && abs(dy) < 12 && now >= dizzyUntil &&
+               pressY >= render::REG_Y &&
+               pressY < render::REG_Y + render::REG_H) {
+      // petting Clawd: a clean tap on the character answers with a brief heart
+      // (a triple-tap's dizzy outranks it; skipped while dizzy is playing)
+      fxState = "heart";
+      fxUntil = now + 1800;
     }
   }
 
@@ -482,6 +493,7 @@ void loop() {
     if (tapCount >= 3) {
       dizzyUntil = now + 2200;
       tapCount = 0;
+      fxUntil = 0; // dizzy must not stay masked behind a just-fired pet heart
     }
   }
   wasTouched = t;
