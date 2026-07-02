@@ -13,9 +13,15 @@
 #include "ui/theme.h"
 #include "ui/text.h"
 #include "ui/widgets.h"
+#include "screens/layout.h"
+#include "screens/settings.h"
+#include "screens/wifi_confirm.h"
+#include "screens/ask.h"
+#include "screens/stats_panel.h"
 
 using namespace app;
 using namespace ui;
+using namespace screens;
 
 static hal::Display display;
 static hal::Storage storage;
@@ -84,25 +90,6 @@ static uint32_t lastNudgeWake = 0; // throttle escalated screen wakes
 // waitId) re-arms the full escalation.
 static bool waitAcked = false;
 static int idleIdx = 0; // idle micro-behaviour: rotating stand-by line
-
-static Rect denyBtn, approveBtn;
-static Rect ackBtn; // "Got it" pill on the needs-you screen (dismisses -> idle)
-// Settings: Stats / Quiet / Brightness / Recalibrate / WiFi / Power off / Close
-static Rect setBtns[7];
-
-static void computeButtons() {
-  int W = display.tft().width(), H = display.tft().height();
-  int bh = 56, m = 8;
-  denyBtn = {m, H - bh - 6, (W - 3 * m) / 2, bh};
-  approveBtn = {denyBtn.x + denyBtn.w + m, H - bh - 6, (W - 3 * m) / 2, bh};
-  int sy = 46, sbh = 32, gap = 6; // 7 rows fit 240x320 (46 + 7*38 = 312)
-  for (int i = 0; i < 7; i++)
-    setBtns[i] = {20, sy + i * (sbh + gap), W - 40, sbh};
-  // "Got it" button: the cardless needs-you screen frees the whole lower third,
-  // so centre a roomy pill there as the dismiss call-to-action.
-  int aw = 150, ah = 46, cardTop = REG_Y + REG_H;
-  ackBtn = {(W - aw) / 2, cardTop + (H - cardTop - ah) / 2, aw, ah};
-}
 
 static const char *stateName(uint32_t now) {
   net::AppState &s = net::server.state();
@@ -296,107 +283,6 @@ static void renderStatic(const char *st) {
   drawStatValues(W, cy, true);
 }
 
-// full=true draws the whole panel; full=false only clears+redraws the value
-// cells (labels stay) so the panel can live-update without a full-screen flash.
-static void renderStats(bool full) {
-  TFT_eSPI &t = display.tft();
-  net::AppState &s = net::server.state();
-  int W = t.width();
-  if (full) {
-    t.fillScreen(TFT_BLACK);
-    gtext("Stats", W / 2, 16, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK, TC_DATUM);
-    gtext("tap to close", W / 2, 310, &FreeSans9pt7b, C_MUTED, TFT_BLACK,
-          BC_DATUM);
-  }
-  // label left, value right-aligned to the screen edge and clamped so long
-  // values (IP / project / big token counts) can't run off the right side.
-  // dy=20 (not 22): 12 rows + the "tap to close" hint must share 320px. At 22 the
-  // last row (IP, y=290) sits so low its value-clear band overlaps the hint and
-  // eats "to close" -> only "tap" survives. Tightening the pitch lifts IP to 268.
-  int lx = 18, rx = W - 18, y = 48, dy = 20, vMax = W - 18 - 108;
-  char b[24];
-  auto row = [&](const char *k, const String &v) {
-    // Sprite-blit the value cell (TOP datum, glyph at y..y+~17) so a live refresh
-    // swaps the number in one pass instead of flashing the cleared band.
-    blitText(104, y - 1, W - 104 - 6, 20, v.c_str(), rx, y, &FreeSansBold9pt7b,
-             C_TEXT, TFT_BLACK, TR_DATUM, vMax);
-    // Redraw the label AFTER the value: the value cell starts at x=104 and its
-    // sprite blacks out the right edge of longer labels like "All-time tok", so
-    // repaint the label on top to keep its tail (opaque -> in place, no flicker).
-    gtext(k, lx, y, &FreeSans9pt7b, C_MUTED, TFT_BLACK, TL_DATUM);
-    y += dy;
-  };
-  fmtTok(s.tokens, b, sizeof(b));
-  row("Today tok", String(b));
-  fmtTok(s.tokensAll, b, sizeof(b));
-  row("All-time tok", String(b));
-  // Rough $ estimate (blended rate; the device only sees totals, so it's a
-  // ballpark, hence the "~"). Tune COST_PER_MTOK to your usual model mix.
-  const double COST_PER_MTOK = 6.0;
-  snprintf(b, sizeof(b), "~$%.2f", (double)s.tokens / 1e6 * COST_PER_MTOK);
-  row("Cost today", String(b));
-  snprintf(b, sizeof(b), "~$%.2f", (double)s.tokensAll / 1e6 * COST_PER_MTOK);
-  row("Cost all", String(b));
-  row("Tool calls", String(s.tools));
-  row("Sessions", String(s.sessions));
-  row("Turns", String(s.turns));
-  fmtDur(ctx.sessionStart ? (millis() - ctx.sessionStart) : 0, b, sizeof(b));
-  row("Session", String(b));
-  row("Project", s.project.length() ? s.project : String("-"));
-  snprintf(b, sizeof(b), "%lu min", (unsigned long)(millis() / 60000UL));
-  row("Uptime", String(b));
-  snprintf(b, sizeof(b), "%u KB", (unsigned)(ESP.getFreeHeap() / 1024));
-  row("Free heap", String(b));
-  row("IP", s.ip);
-}
-
-static void renderSettings() {
-  TFT_eSPI &t = display.tft();
-  int W = t.width();
-  t.fillScreen(TFT_BLACK);
-  gtext("Settings", W / 2, 16, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK,
-        TC_DATUM);
-  char quiet[20], bri[20];
-  snprintf(quiet, sizeof(quiet), "Quiet: %s", ctx.dnd ? "on" : "off");
-  snprintf(bri, sizeof(bri), "Brightness: %d%%", ctx.brightPct);
-  const char *labels[7] = {"Stats", quiet, bri, "Recalibrate",
-                           "WiFi setup", "Power off", "Close"};
-  for (int i = 0; i < 7; i++)
-    drawButton(setBtns[i], labels[i], (i == 1 && ctx.dnd) ? 0x7B40 : C_FACE);
-}
-
-static void renderWifiConfirm() {
-  TFT_eSPI &t = display.tft();
-  int W = t.width();
-  t.fillScreen(TFT_BLACK);
-  gtext("WiFi setup", W / 2, 40, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK,
-        TC_DATUM);
-  gtext("Opens a setup hotspot.", W / 2, 96, &FreeSans9pt7b, C_TEXT, TFT_BLACK,
-        TC_DATUM);
-  gtext("Buddy is offline a few min.", W / 2, 122, &FreeSans9pt7b, C_MUTED,
-        TFT_BLACK, TC_DATUM);
-  gtext("Old password is kept.", W / 2, 146, &FreeSans9pt7b, C_MUTED, TFT_BLACK,
-        TC_DATUM);
-  drawButton(denyBtn, "Cancel", C_FACE);
-  drawButton(approveBtn, "Open", C_OK);
-}
-
-// "Allow this tool?" — shown when a synchronous PermissionRequest hook is waiting
-// on the device. A tap approves/denies just this one pending tool call.
-static void renderAsk() {
-  TFT_eSPI &t = display.tft();
-  net::AppState &s = net::server.state();
-  int W = t.width();
-  t.fillScreen(TFT_BLACK);
-  gtext("Allow?", W / 2, 40, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK, TC_DATUM);
-  gtext("Claude wants to run", W / 2, 92, &FreeSans9pt7b, C_MUTED, TFT_BLACK,
-        TC_DATUM);
-  gtextClamp(s.askTool.c_str(), W / 2, 122, &FreeSansBold18pt7b, C_TEXT,
-             TFT_BLACK, MC_DATUM, W - 24);
-  drawButton(denyBtn, "Deny", C_NO);
-  drawButton(approveBtn, "Allow", C_OK);
-}
-
 static void handleSettingsTap(int x, int y) {
   for (int i = 0; i < 7; i++) {
     if (!inRect(setBtns[i], x, y))
@@ -445,7 +331,7 @@ void setup() {
   storage.begin();
   touch.begin(display, storage);
   led.begin();
-  computeButtons();
+  computeButtons(display.tft());
 
   // restore persisted prefs (Quiet/DND + backlight brightness); migrate the old
   // 3-level "quiet" key (>=1 -> on) for anyone upgrading.
