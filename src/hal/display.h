@@ -3,7 +3,7 @@
 
 namespace hal {
 
-// Thin wrapper around the CYD's ST7789 panel (HSPI). Owns the TFT_eSPI
+// Thin wrapper around the CYD's ILI9341 panel (HSPI). Owns the TFT_eSPI
 // instance so the rest of the firmware never talks to TFT_eSPI globals.
 class Display {
 public:

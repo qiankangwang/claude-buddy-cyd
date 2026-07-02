@@ -54,8 +54,10 @@ struct AppState {
 };
 
 // WiFi (captive-portal provisioned) + HTTP server. Endpoints:
-//   POST /event  -> session/stats snapshot (JSON body)
-//   GET  /       -> health
+//   POST /event    -> session/stats snapshot (JSON body)
+//   POST /ask      -> opt-in Allow/Deny prompt for a pending tool call
+//   GET  /decision -> the tap for the current ask ("allow"/"deny"/"")
+//   GET  /         -> health
 class Server {
 public:
   // onPortal(apName) is called if WiFi needs provisioning, so the caller can

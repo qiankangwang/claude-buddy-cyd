@@ -278,7 +278,7 @@ the dashboard — on a screen tap or a press of the board's **RST** button.
 
 ```
 src/            firmware: hal/ (display, touch, led, storage), net/ (server),
-                render/ (Clawd GIF); ble/ is shelved (excluded from the build)
+                render/ (Clawd GIF)
 data/clawd/     Clawd GIF character pack (flashed as the LittleFS image)
 assets/         README preview GIFs
 tools/          buddy_hook.py + HOOKS.md (the single-file PC helper + setup)

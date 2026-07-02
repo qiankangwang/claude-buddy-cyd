@@ -9,9 +9,11 @@ over WiFi. This document describes the design as shipped.
 Claude Code emits hook events on the PC. A small Python helper (`buddy_hook.py`),
 registered as a hook, reads the session transcript, computes a usage rollup, and
 POSTs a snapshot to the device over the LAN. The device renders the Clawd
-character for the current activity and a stats card. There is **no on-device
-approval** — every hook is non-blocking and never affects Claude's own
-permission flow.
+character for the current activity and a stats card. All stats events are
+non-blocking and never affect Claude's own permission flow. One **optional,
+opt-in** exception: registering the `PermissionRequest` hook adds on-device
+tap-to-approve for a pending tool call (`POST /ask` + polled `GET /decision`);
+it fails open to Claude's normal prompt on timeout or an unreachable device.
 
 ## 2. Hardware
 
@@ -29,6 +31,8 @@ permission flow.
 
 - Device runs `WiFiManager` (captive-portal provisioning) + a `WebServer`:
   - `POST /event` — JSON snapshot; requires header `X-Buddy-Token`.
+  - `POST /ask` — show the opt-in Allow/Deny prompt for a pending tool call.
+  - `GET /decision` — the tap for the current ask (`allow`/`deny`/`""`).
   - `GET /` — health.
 - `POST /event` body fields (all optional; last value sticks):
   `total`, `running` (session/activity flags), `msg` (activity text),
@@ -82,7 +86,6 @@ src/
     server.{h,cpp}      WiFiManager + WebServer + AppState
   render/
     character.{h,cpp}   Clawd GIF pack decode (AnimatedGIF -> off-screen sprite)
-  ble/                  shelved (excluded from the build via build_src_filter)
 ```
 
 Single-threaded: HTTP is serviced inside `loop()` via `handleClient()`, so the
@@ -112,8 +115,10 @@ renderer and request handlers never race and no locking is needed.
 - **BLE → WiFi.** The original target was the official Hardware Buddy BLE
   transport, which is not exposed in the available Claude desktop app build. The
   project pivoted to a self-hosted WiFi + Claude Code hooks transport with the
-  same device/UX goals. The BLE implementation remains under `src/ble/` but is
-  excluded from the build.
-- **Approval → passive dashboard.** An earlier iteration showed permission
-  prompts with on-device Approve/Deny. That was removed in favour of a passive
-  usage dashboard; the device no longer gates tool calls.
+  same device/UX goals. The unused BLE implementation lived under `src/ble/`
+  until mid-2026 (recoverable from git history).
+- **Approval → passive dashboard → opt-in approval.** An earlier iteration
+  showed permission prompts with on-device Approve/Deny. That was removed in
+  favour of a passive usage dashboard, then a leaner version returned as an
+  **opt-in**: only registering the `PermissionRequest` hook enables it, and it
+  always fails open to Claude's normal prompt.
