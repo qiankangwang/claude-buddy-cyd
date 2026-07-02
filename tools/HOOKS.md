@@ -12,10 +12,12 @@ it always fails open, so the session is never stuck if the device is off.
 
 `~/.claude/buddy.json`:
 ```json
-{ "ip": "192.168.x.x", "token": "<the token shown on the device>" }
+{ "ip": "claude-cyd.local", "token": "<the token shown on the device>" }
 ```
-The CYD shows its current `IP` and `token` (long-press → **Settings → Stats**).
-Update `ip` if the device's DHCP address changes.
+`ip` takes either the device's mDNS hostname — **`claude-cyd.local`**, which
+keeps working when DHCP hands out a new address (Windows 10+/macOS resolve
+`.local` natively) — or a literal IP if your network blocks mDNS. The CYD shows
+its current `IP` and `token` (long-press → **Settings → Stats**).
 
 ## 2. Hooks (`~/.claude/settings.json`)
 
@@ -64,6 +66,10 @@ Per event the helper pushes the current activity (a rotating whimsical verb
 while busy) plus today's usage rollup read from the session transcript: tokens
 (today + all-time), tool calls, assistant turns, and session count. Today's
 counts persist in `~/.claude/buddy_tokens.json` and reset at local midnight.
+It also stamps each event with the PC-local **date**, which the device uses to
+key its on-device 30-day usage history (the trends card) — the device itself
+has no clock. An older helper without the date simply leaves the trends card
+empty; everything else still works.
 
 ## 4. Use it from another computer (no repo needed)
 

@@ -1,8 +1,9 @@
 # CYD Claude Buddy — 2026-07 Overhaul Design
 
-Status: Phase 0–1 **implemented** on the `overhaul` branch (user selected
-"code refactor" as an overhaul goal); Phase 2–3 scope pending user sign-off
-(see Open decisions).
+Status: **all phases implemented** on the `overhaul` branch. The user
+delegated the Phase 2–3 scope ("你看着做"); the decisions taken are recorded
+under Open decisions below. Pending: on-device verification by the user
+(USB flash of the new partition layout), then merge to main.
 
 ## Goals
 
@@ -114,15 +115,22 @@ Recommended: swipeable multi-card home. The tuned home screen stays untouched
 as card 1; horizontal swipe pages to a trends card / full stats card. Optional
 surface polish (budget ring, iconified labels) on top.
 
-## Open decisions (blocking Phase 2/3 only)
+## Open decisions — resolved (scope delegated by the user)
 
-1. Overall approach A (phased, recommended) vs B (one branch, everything) vs C
-   (features first).
-2. Which Phase 2 features to include.
-3. UI direction: multi-card / multi-card + polish / none this round.
-4. Touch-interaction scope: cheap easter eggs only, or none.
-5. Speaker hardware present for sound alerts?
-6. Local `.scratch-busy/` directory: keep or archive (git-ignored either way).
+1. Overall approach: **A (phased)**, as recommended.
+2. Phase 2 features: **mDNS config** (docs-only — the hook already accepts a
+   hostname), **OTA** (dual 0x150000 slots; LittleFS moved to 0x2B0000; one
+   USB migration flash), **usage history** (hook sends the local date; device
+   keeps a 30-day NVS ring), **pet-the-character easter egg**. **Sound alerts
+   skipped** — needs a speaker on the P4 connector that the user hasn't
+   confirmed owning; revisit when the hardware exists.
+3. UI: **two-page bottom card** (stats ⇄ trends via horizontal swipe). The
+   tuned home layout is untouched as page 0; Clawd and the top bar never move.
+   Card resets to page 0 when the screen sleeps.
+4. Touch interactions: cheap easter egg only (tap Clawd → heart, fired on a
+   still release so swipes and menu-closing taps don't trigger it; a
+   triple-tap's dizzy outranks it).
+5. `.scratch-busy/`: left as-is locally (git-ignored; user's call whenever).
 
 ## Error handling & testing
 

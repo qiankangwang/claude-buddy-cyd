@@ -89,7 +89,7 @@ know the device's IP + token (see [setup](#first-time-setup)).
 | `busy` (WORKING) | Claude is working | a rotating set of "working" clips + a whimsical verb ("Pondering…", "Brewing…") that changes in sync with the animation. Tool-aware: editing, running, reading, delegating… |
 | `attention` (NEEDS YOU) | the turn was handed back to you — a **Notification**, or **Stop** with nothing to do next | sticky alert; the LED nudge escalates the longer it waits |
 | `celebrate` (DONE!) | a turn just finished (**Stop**) | brief celebration |
-| `heart` (HELLO) | a new session started (**SessionStart**) | brief hello |
+| `heart` (HELLO) | a new session started (**SessionStart**), or you pet Clawd (tap the character) | brief hello |
 | `error` (OOPS) | a tool reported an error | brief wince |
 | `dizzy` | triple-tap the screen | easter egg |
 
@@ -104,8 +104,12 @@ Dismissing is local — it doesn't reply to Claude.
 **Stats card** (bottom): two headline figures — **Today** and **Total** tokens —
 over four compact counts: **Tools** (tool calls), **Turns** (assistant turns),
 **Sess** (sessions today), **Time** (current session duration). The numbers
-roll like an odometer when they change. A fuller, live-updating panel is under
-long-press → **Settings → Stats** (adds project name, uptime, free heap, IP).
+roll like an odometer when they change. **Swipe the card sideways** to page to
+the **Trends card**: a bar per day for the last 14 days (today in coral, still
+growing live) with a 7-day total and daily average — the device keeps a 30-day
+history in flash, dated by the PC so it needs no clock of its own. A fuller,
+live-updating panel is under long-press → **Settings → Stats** (adds project
+name, uptime, free heap, IP).
 
 **Ambient cues.** The onboard RGB LED speaks a colour language — blue while
 working (cooler/quicker as the session heats up), amber when it needs you
@@ -140,8 +144,9 @@ ESP32 + TFT:
 - **Touch (optional):** adjust the XPT2046 pins in `src/hal/touch.cpp`, or stub
   `hal::Touch` — touch only drives the Settings menu and the easter egg.
 - **LED (optional):** `src/hal/led.cpp`; safe to no-op if your board has none.
-- **Flash / partition:** the Clawd pack needs ~0.6 MB of LittleFS — size the
-  data partition to your board's flash.
+- **Flash / partition:** the Clawd pack needs ~1.2 MB of LittleFS — size the
+  data partition to your board's flash (drop some `busy_*` clips from the pack
+  and manifest if you're tight).
 
 The Clawd art is a plain GIF pack (`data/clawd/`, 120 px-wide, black background),
 so you can drop in your own character without touching code.
@@ -158,6 +163,26 @@ pio run -e cyd -t uploadfs    # 2) GIF pack  -> LittleFS (data/clawd/)
 
 Run both the first time (firmware *and* the filesystem image). After that,
 re-flash only what changed — `upload` for code, `uploadfs` for new/edited GIFs.
+
+> **Upgrading from a pre-OTA build (mid-2026 or earlier):** the partition
+> layout changed to dual OTA slots, so this one flash must be over **USB** and
+> must run **both** commands above — the LittleFS region moved, and firmware
+> alone would boot to a missing character. WiFi credentials, the token and the
+> touch calibration live in NVS and survive the migration.
+
+### Reflash over WiFi (OTA)
+
+Once the OTA layout is on the board, the cable is optional. Put your device
+token (the one in `buddy.json`) into the `--auth=` flag of the `cyd-ota`
+environment in `platformio.ini` (don't commit it), then:
+
+```bash
+pio run -e cyd-ota -t upload      # firmware over WiFi
+pio run -e cyd-ota -t uploadfs    # GIF pack over WiFi
+```
+
+The device shows a progress bar while it updates and reboots by itself; if the
+transfer fails it just reboots back into the old firmware.
 The display driver is a build flag (`ILI9341_2_DRIVER` in `platformio.ini`); on a
 different panel that shows a white or garbled image, switch to your controller's
 driver/colour-order flags (e.g. `ST7789_DRIVER` + `TFT_RGB_ORDER=TFT_BGR`).
@@ -179,8 +204,11 @@ driver/colour-order flags (e.g. `ST7789_DRIVER` + `TFT_RGB_ORDER=TFT_BGR`).
    random secret generated on the device.
 4. **Tell your PC where the device is** — `~/.claude/buddy.json`:
    ```json
-   { "ip": "<device ip>", "token": "<device token>" }
+   { "ip": "claude-cyd.local", "token": "<device token>" }
    ```
+   `claude-cyd.local` is the device's mDNS name and keeps working when DHCP
+   changes its address (Windows 10+/macOS resolve `.local` natively); use the
+   literal IP instead if your network blocks mDNS.
 5. **Register the hooks** in `~/.claude/settings.json` so Claude Code drives the
    device. Full snippet + explanation: **[tools/HOOKS.md](tools/HOOKS.md)**.
 
@@ -217,6 +245,9 @@ merged); if two machines push at once, the device shows whichever pushed last.
 ## On-device controls
 
 - **Tap** while asleep — wake the screen.
+- **Tap Clawd** — pet the character: a brief `heart` hello.
+- **Swipe sideways** — page the bottom card between **stats** and **trends**
+  (goes back to stats when the screen next sleeps).
 - **Tap "Got it"** on the *Needs you* screen — dismiss the nudge: the device
   drops back to idle (LED off) until the next time Claude needs you.
 - **Triple-tap** — `dizzy` easter egg.
@@ -271,8 +302,11 @@ the dashboard — on a screen tap or a press of the board's **RST** button.
 - **Numbers never update** — the device shows what it last received. Check
   `buddy.json` (ip/token match the device), that the hooks are registered, that
   Python 3 is on `PATH`, and that the PC can reach the device IP.
-- **IP changed** — DHCP gave the device a new address; update `ip` in
-  `buddy.json` (a static DHCP lease avoids this).
+- **IP changed** — point `buddy.json` at `claude-cyd.local` and it stops
+  mattering; with a literal IP, update it (or give the device a static DHCP
+  lease).
+- **OTA upload rejected ("Authentication failed")** — the `--auth=` value in
+  the `cyd-ota` env must be the device token from `buddy.json`.
 
 ## Repository layout
 

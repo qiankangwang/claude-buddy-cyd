@@ -36,7 +36,9 @@ it fails open to Claude's normal prompt on timeout or an unreachable device.
   - `GET /` — health.
 - `POST /event` body fields (all optional; last value sticks):
   `total`, `running` (session/activity flags), `msg` (activity text),
-  `project`, `tokens` (today), `tokensAll`, `tools`, `turns`, `sessions`.
+  `project`, `tokens` (today), `tokensAll`, `tools`, `turns`, `sessions`,
+  `date` (PC-local `YYYY-MM-DD`; keys the on-device 30-day usage history — the
+  device has no clock of its own).
 - Auth is a shared token generated on the device (NVS) and shown on screen; the
   helper bypasses any system HTTP proxy since the device is on the LAN.
 
@@ -64,9 +66,12 @@ All events are non-blocking; device/network errors are swallowed (fail-open).
   is the rotation signal). Only the headline repaints on rotation, so the stats
   grid never flickers.
 - **Stats card:** a 3×2 grid — today / all-time tokens (`k`/`M`), tool calls,
-  sessions, turns, session duration.
+  sessions, turns, session duration. A sideways swipe pages the card to the
+  **trends card** (a bar per day, last 14 days, today live in coral; 7-day
+  total + average). The card returns to stats when the screen next sleeps.
 - **Settings** (long-press): Stats panel (full detail), touch Recalibrate, and a
-  non-destructive WiFi reconfigure. Triple-tap anywhere = `dizzy` easter egg.
+  non-destructive WiFi reconfigure. Triple-tap anywhere = `dizzy` easter egg;
+  a single tap on the character = a brief `heart` (petting).
 - 30 s auto screen-off when idle; a touch or new activity wakes it.
 
 State selection: `dizzy` (recent triple-tap) → `sleep` (no WiFi/session) →
@@ -77,7 +82,8 @@ State selection: `dizzy` (recent triple-tap) → `sleep` (no WiFi/session) →
 ```
 src/
   main.cpp              orchestrator: state machine + transients, touch gesture
-                        pipeline, mode dispatch, sleep/wake power loop
+                        pipeline (tap/swipe/long-press), mode dispatch,
+                        sleep/wake power loop, WiFi OTA service
   app/
     ctx.{h,cpp}         small shared runtime state (session start, intensity,
                         Quiet, brightness)
@@ -85,6 +91,7 @@ src/
                         timeouts, state colours/labels, intensity tiers
     led_language.{h,cpp} state -> LED colour/rhythm mapping
     store.{h,cpp}       NVS: auth token + stats snapshot (save/restore)
+    history.{h,cpp}     NVS: rolling 30-day per-day token history
     power.{h,cpp}       deep-sleep "power off" (touch/RST wakes)
   ui/
     theme.h             RGB565 palette
@@ -92,7 +99,9 @@ src/
     widgets.{h,cpp}     Rect hit-testing + buttons
   screens/
     layout.{h,cpp}      shared tap-target rects (action bar, settings rows, ack)
-    home.{h,cpp}        status bar, headline, stats card + odometer, budget bar
+    home.{h,cpp}        status bar, headline, stats card + odometer, budget bar;
+                        owns the bottom card's page (0 stats / 1 trends)
+    trends.{h,cpp}      trends card: 14-day usage bars + 7-day summary
     stats_panel.{h,cpp} full live Stats panel
     settings.{h,cpp}    settings menu
     wifi_confirm.{h,cpp} WiFi-portal confirmation
@@ -117,9 +126,12 @@ renderer and request handlers never race and no locking is needed.
   `TFT_eSprite` double-buffer; `AnimatedGIF` decodes one scanline at a time and
   composites into it (nearest-neighbour scaled to the region). On a failed
   sprite allocation the renderer falls back to direct draw.
-- Partition table (`partitions.csv`, 4 MB, single-app): `nvs`,
-  `app0` (factory, ~1.81 MB), `littlefs` (~2.06 MB, holds the GIF pack). The
-  LittleFS partition is labelled `littlefs` and mounted explicitly.
+- Partition table (`partitions.csv`, 4 MB, dual-OTA): `nvs` (kept at its
+  pre-OTA offset so credentials/token/calibration survive the migration),
+  `otadata`, `app0`/`app1` (ota_0/ota_1, ~1.31 MB each), `littlefs` (~1.31 MB,
+  holds the ~1.2 MB GIF pack). The LittleFS partition is labelled `littlefs`
+  and mounted explicitly. Firmware and filesystem also flash over WiFi via
+  `ArduinoOTA` (env `cyd-ota`; password = the device token).
 
 ## 8. Build & GIF assets
 
