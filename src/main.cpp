@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <ArduinoOTA.h>
+#include <LittleFS.h>
 #include "hal/display.h" // pulls in TFT_eSPI (GFX free fonts come with LOAD_GFXFF)
 #include "hal/storage.h"
 #include "hal/touch.h"
@@ -113,6 +115,60 @@ static const char *stateName(uint32_t now) {
   return "sleep";
 }
 
+// ---- WiFi OTA (`pio run -e cyd-ota -t upload` / `-t uploadfs`) --------------
+// Password = the device token (the same secret the hooks send). The transfer
+// runs inside ArduinoOTA.handle(), so the loop is parked: draw the progress
+// screen up front and just repaint the bar as chunks land.
+static void otaSetup() {
+  ArduinoOTA.setHostname("claude-cyd");
+  ArduinoOTA.setPassword(net::server.state().token.c_str());
+  ArduinoOTA.setMdnsEnabled(false); // net::server already owns the mDNS name
+  ArduinoOTA.onStart([]() {
+    settingsOpen = statsOpen = wifiConfirmOpen = askOpen = false;
+    screenOn = true;
+    setCpuFrequencyMhz(240);
+    display.backlight(true);
+    bool fs = ArduinoOTA.getCommand() == U_SPIFFS;
+    if (fs)
+      LittleFS.end(); // the pack partition is about to be rewritten raw
+    TFT_eSPI &t = display.tft();
+    t.fillScreen(TFT_BLACK);
+    gtext(fs ? "Updating files..." : "Updating firmware...", t.width() / 2, 130,
+          &FreeSansBold12pt7b, C_CORAL, TFT_BLACK, MC_DATUM);
+    t.drawRoundRect(30, 160, t.width() - 60, 18, 6, 0x4A69);
+  });
+  ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+    static int lastPct = -1;
+    int pct = total ? (int)((uint64_t)done * 100 / total) : 0;
+    if (pct == lastPct)
+      return;
+    lastPct = pct;
+    TFT_eSPI &t = display.tft();
+    t.fillRoundRect(32, 162, (t.width() - 64) * pct / 100, 14, 4, C_CORAL);
+    char b[8];
+    snprintf(b, sizeof(b), "%d%%", pct);
+    blitText(0, 190, t.width(), 22, b, t.width() / 2, 200, &FreeSansBold9pt7b,
+             C_TEXT, TFT_BLACK, MC_DATUM, 80);
+  });
+  ArduinoOTA.onEnd([]() {
+    gtext("Rebooting...", display.tft().width() / 2, 236, &FreeSans9pt7b,
+          C_MUTED, TFT_BLACK, MC_DATUM);
+  });
+  ArduinoOTA.onError([](ota_error_t e) {
+    // A half-applied update (or an unmounted pack FS) isn't a state worth
+    // limping on in -- persist the counters and reboot back to the old app.
+    Serial.printf("[ota] error %d\n", (int)e);
+    gtext("Update failed", display.tft().width() / 2, 236, &FreeSans9pt7b,
+          C_NO, TFT_BLACK, MC_DATUM);
+    saveStatsIfChanged(storage, true);
+    historySaveIfChanged(storage, true);
+    delay(1200);
+    ESP.restart();
+  });
+  ArduinoOTA.begin();
+  Serial.println("[ota] ready (hostname claude-cyd, auth = device token)");
+}
+
 static void handleSettingsTap(int x, int y) {
   for (int i = 0; i < 7; i++) {
     if (!inRect(setBtns[i], x, y))
@@ -215,6 +271,16 @@ void loop() {
   uint32_t now = millis();
   net::server.loop();
   net::AppState &s = net::server.state();
+
+  // WiFi OTA: arm once the link first comes up, then service it every loop
+  // (before the screen-off early-returns below, so a dark device still updates).
+  static bool otaUp = false;
+  if (s.wifiUp && !otaUp) {
+    otaUp = true;
+    otaSetup();
+  }
+  if (otaUp)
+    ArduinoOTA.handle();
 
   // Mirror the latest counters to NVS (throttled + only-on-change) so an unplug
   // restores them on the next boot. Runs before any early return below so it
