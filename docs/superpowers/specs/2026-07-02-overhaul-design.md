@@ -1,7 +1,8 @@
 # CYD Claude Buddy — 2026-07 Overhaul Design
 
-Status: Phase 0–1 approved (user selected "code refactor" as an overhaul goal);
-Phase 2–3 scope pending user sign-off (see Open decisions).
+Status: Phase 0–1 **implemented** on the `overhaul` branch (user selected
+"code refactor" as an overhaul goal); Phase 2–3 scope pending user sign-off
+(see Open decisions).
 
 ## Goals
 
@@ -53,8 +54,10 @@ src/
     led_language.{h,cpp} driveLed(state, now, intensity, waitStart, silenced)
     store.{h,cpp}        NVS: token, stats snapshot (StatsBlob save/restore),
                          prefs (dnd, brightness)
-    power.{h,cpp}        screen sleep/wake, pre-sleep dim, CPU clock,
-                         deep-sleep power-off
+    power.{h,cpp}        deep-sleep power-off (the screen sleep/dim/CPU-clock
+                         sequencing is control flow of the loop itself and
+                         stays in main.cpp — moving it would mean threading
+                         five flags through a module boundary for no gain)
   ui/
     theme.h              palette (C_CORAL et al) + shared font choices
     text.{h,cpp}         gtext, textW, gtextClamp, blitText, fmtTok, fmtDur
@@ -80,6 +83,9 @@ Notes:
   store → led_language → screens (one per commit) → power.
 - Verification: `pio run -e cyd` clean after each step; final on-device check
   by the user (animation pacing, verb rotation, panels, odometer, sleep/wake).
+- Measured cost of the split: RAM unchanged (+104 B), flash +~37 KB (54.4% →
+  56.3% of the app partition) from losing cross-TU inlining. Acceptable; if
+  flash ever gets tight, `-flto` in `build_flags` claws most of it back.
 
 ## Phase 2 — Features (scope pending user)
 

@@ -277,8 +277,10 @@ the dashboard — on a screen tap or a press of the board's **RST** button.
 ## Repository layout
 
 ```
-src/            firmware: hal/ (display, touch, led, storage), net/ (server),
-                render/ (Clawd GIF)
+src/            firmware: main.cpp (orchestrator), app/ (state tables, LED
+                language, NVS store, power), ui/ (theme, text, widgets),
+                screens/ (home, stats, settings, wifi, ask), hal/ (display,
+                touch, led, storage), net/ (server), render/ (Clawd GIF)
 data/clawd/     Clawd GIF character pack (flashed as the LittleFS image)
 assets/         README preview GIFs
 tools/          buddy_hook.py + HOOKS.md (the single-file PC helper + setup)

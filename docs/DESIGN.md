@@ -76,7 +76,27 @@ State selection: `dizzy` (recent triple-tap) → `sleep` (no WiFi/session) →
 
 ```
 src/
-  main.cpp              loop pump: net -> touch -> state -> render; UI + screens
+  main.cpp              orchestrator: state machine + transients, touch gesture
+                        pipeline, mode dispatch, sleep/wake power loop
+  app/
+    ctx.{h,cpp}         small shared runtime state (session start, intensity,
+                        Quiet, brightness)
+    activity.{h,cpp}    pure tables/lookups: busy verbs, idle lines, per-clip
+                        timeouts, state colours/labels, intensity tiers
+    led_language.{h,cpp} state -> LED colour/rhythm mapping
+    store.{h,cpp}       NVS: auth token + stats snapshot (save/restore)
+    power.{h,cpp}       deep-sleep "power off" (touch/RST wakes)
+  ui/
+    theme.h             RGB565 palette
+    text.{h,cpp}        gtext/clamp/sprite-blit text + number formatting
+    widgets.{h,cpp}     Rect hit-testing + buttons
+  screens/
+    layout.{h,cpp}      shared tap-target rects (action bar, settings rows, ack)
+    home.{h,cpp}        status bar, headline, stats card + odometer, budget bar
+    stats_panel.{h,cpp} full live Stats panel
+    settings.{h,cpp}    settings menu
+    wifi_confirm.{h,cpp} WiFi-portal confirmation
+    ask.{h,cpp}         opt-in "Allow this tool?" prompt
   hal/
     display.{h,cpp}     TFT_eSPI (ILI9341, HSPI) wrapper + backlight
     touch.{h,cpp}       XPT2046 (VSPI) read + fixed/NVS calibration mapping
