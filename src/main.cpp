@@ -9,6 +9,7 @@
 #include "app/activity.h"
 #include "app/led_language.h"
 #include "app/store.h"
+#include "app/history.h"
 #include "app/power.h"
 #include "ui/theme.h"
 #include "ui/text.h"
@@ -166,6 +167,7 @@ void setup() {
   // restore the last stats snapshot so a replug shows the previous numbers
   // immediately (the next hook event re-asserts the authoritative totals).
   restoreStats(storage);
+  historyRestore(storage);
   // seed the odometer counters from the restored values so they read true at
   // once instead of rolling up from zero on the first frame after WiFi connects.
   seedStats();
@@ -210,6 +212,8 @@ void loop() {
   // restores them on the next boot. Runs before any early return below so it
   // still ticks while the screen is asleep or a menu/panel is open.
   saveStatsIfChanged(storage, false);
+  historyNote(s.date, s.tokens); // per-day ring for the trends card
+  historySaveIfChanged(storage, false);
 
   // ---- transient hook effect (attention/celebrate/heart): edge-trigger once
   //      per event; wakes the screen so a "needs you" / "done" isn't missed ----
@@ -472,6 +476,7 @@ void loop() {
     screenOn = false;
     dimmed = false;
     saveStatsIfChanged(storage, true); // checkpoint before going dark (likely unplug point)
+    historySaveIfChanged(storage, true);
     display.backlight(false);
     led.off();
     setCpuFrequencyMhz(80); // still tracking over WiFi, but at the WiFi-safe

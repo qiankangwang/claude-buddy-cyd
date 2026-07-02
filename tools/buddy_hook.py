@@ -313,8 +313,11 @@ def main():
     burst, agents = _intensity(evt, data.get("tool_name", ""))
 
     try:
+        # local calendar date: the device keys its usage-history ring by this,
+        # so it needs no clock/NTP/timezone of its own (PC stays source of truth)
         payload = dict(extra, total=total, running=running, msg=msg[:24],
-                       waiting=waiting, burst=burst, agents=agents, ts=ev_ts)
+                       waiting=waiting, burst=burst, agents=agents, ts=ev_ts,
+                       date=time.strftime("%Y-%m-%d", time.localtime()))
         bud = _budget()
         if bud:
             payload["budget"] = bud

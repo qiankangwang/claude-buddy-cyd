@@ -14,6 +14,8 @@ struct AppState {
   int total = 0, running = 0;
   String msg;
   String project;          // current project (cwd basename)
+  String date;             // PC-local "YYYY-MM-DD" from the hook; keys the
+                           // on-device usage-history ring (device has no clock)
   long tokens = 0;         // tokens used today
   long long tokensAll = 0; // tokens used all-time (64-bit: won't wrap past ~2.1B)
   int tools = 0;           // tool calls today

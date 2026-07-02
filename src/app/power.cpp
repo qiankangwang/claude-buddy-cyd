@@ -1,6 +1,7 @@
 #include "power.h"
 #include <esp_sleep.h>
 #include "store.h"
+#include "history.h"
 #include "ui/text.h"
 #include "ui/theme.h"
 
@@ -12,6 +13,7 @@ void powerOff(hal::Display &display, hal::Touch &touch, hal::Led &led,
   int W = t.width(), H = t.height();
   led.off();
   saveStatsIfChanged(storage, true); // persist before deep sleep (wakes as a cold boot)
+  historySaveIfChanged(storage, true);
   t.fillScreen(TFT_BLACK);
   ui::gtext("Powering off", W / 2, H / 2 - 12, &FreeSansBold18pt7b, C_CORAL,
             TFT_BLACK, MC_DATUM);

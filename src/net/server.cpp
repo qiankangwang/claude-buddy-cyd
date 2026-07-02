@@ -54,6 +54,8 @@ static void handleEvent() {
     s.msg = (const char *)doc["msg"];
   if (doc["project"].is<const char *>())
     s.project = (const char *)doc["project"];
+  if (doc["date"].is<const char *>())
+    s.date = (const char *)doc["date"];
   s.tokens = doc["tokens"] | s.tokens;
   s.tokensAll = doc["tokensAll"] | (long long)s.tokensAll;
   s.tools = doc["tools"] | s.tools;
