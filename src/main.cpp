@@ -7,10 +7,14 @@
 #include "hal/led.h"
 #include "render/character.h"
 #include "net/server.h"
+#include "app/ctx.h"
+#include "app/activity.h"
+#include "app/led_language.h"
 #include "ui/theme.h"
 #include "ui/text.h"
 #include "ui/widgets.h"
 
+using namespace app;
 using namespace ui;
 
 static hal::Display display;
@@ -27,7 +31,6 @@ static uint32_t fxUntil = 0;
 static String fxState;
 // power / interaction
 static uint32_t lastInteraction = 0;
-static uint32_t sessionStart = 0; // millis when the current Claude session began
 // activity watchdog: millis of the most recent hook event (any /event POST).
 // The running state is hook-driven, so if a turn is interrupted (Esc, a crash, a
 // dropped packet) and its closing Stop never arrives, we'd otherwise sit on a
@@ -47,14 +50,7 @@ static int tapCount = 0;
 // touched for this long after the last solid contact (debounced release).
 #define TOUCH_RELEASE_MS 80
 
-// rotating "busy" verb, advanced in sync with the character animation loop
-static const char *WHIMSY[] = {
-    "Whirring...",  "Pondering...",   "Brewing...",   "Churning...",
-    "Noodling...",  "Cogitating...",  "Conjuring...", "Percolating...",
-    "Simmering...", "Marinating...",  "Mulling...",   "Vibing...",
-    "Crunching...", "Stewing...",     "Spinning...",  "Forging...",
-    "Hatching...",  "Musing...",      "Cooking...",   "Tinkering..."};
-static const int N_WHIMSY = sizeof(WHIMSY) / sizeof(WHIMSY[0]);
+// rotating "busy" verb index, advanced in sync with the character animation loop
 static int verbIdx = 0;
 static uint32_t lastLoops = 0;
 
@@ -73,14 +69,10 @@ static bool longFired = false;
 // ---- enrichment state -------------------------------------------------------
 // "Quiet" (Do Not Disturb): a single on/off Settings toggle. When on, the RGB
 // LED is silenced and the screen never auto-wakes for a nudge/reaction (only a
-// touch wakes it). Off = normal. Brightness: the user's "on" backlight (PWM).
-static bool dndOn = false;
-static bool ledSilenced() { return dndOn; }
-static bool autoWakeBlocked() { return dndOn; }
-static int brightPct = 100;
-// Session intensity tier (0 calm / 1 busy / 2 intense), from the hook's rolling
-// tool-call burst + active-subagent count. Drives clip speed, tint and LED.
-static int intensity = 0;
+// touch wakes it). Off = normal. dnd / brightness / intensity live in app::ctx
+// (the settings screen renders them; the loop below writes them).
+static bool ledSilenced() { return ctx.dnd; }
+static bool autoWakeBlocked() { return ctx.dnd; }
 // "Your turn" waiting nudge: when Claude hands the turn back and idles, the LED
 // (and eventually the screen) escalate the longer you don't respond.
 static uint32_t waitStart = 0;     // millis the current wait began (0 = none)
@@ -91,19 +83,7 @@ static uint32_t lastNudgeWake = 0; // throttle escalated screen wakes
 // home screen) and stops nudging. Bound to the wait episode: a fresh wait (new
 // waitId) re-arms the full escalation.
 static bool waitAcked = false;
-// Idle micro-behaviour: gently rotate a friendly line while standing by.
-static const char *IDLE_MSGS[] = {"Ready for you", "All caught up",
-                                  "Standing by", "At your service",
-                                  "Idle"};
-static const int N_IDLE = sizeof(IDLE_MSGS) / sizeof(IDLE_MSGS[0]);
-static int idleIdx = 0;
-
-// Map the hook's burst (tool calls/min) + active subagents to a 0/1/2 tier.
-static int intensityTier(int burst, int agents) {
-  if (burst >= 8 || agents >= 2) return 2;
-  if (burst >= 3 || agents >= 1) return 1;
-  return 0;
-}
+static int idleIdx = 0; // idle micro-behaviour: rotating stand-by line
 
 static Rect denyBtn, approveBtn;
 static Rect ackBtn; // "Got it" pill on the needs-you screen (dismisses -> idle)
@@ -239,125 +219,6 @@ static const char *stateName(uint32_t now) {
   return "sleep";
 }
 
-// the running "work" clips share one look (WORKING / coral / blue LED) and a verb
-static bool isWork(const char *st) {
-  static const char *W[] = {"busy",      "typing",  "building",  "thinking",
-                            "juggling",  "groove",  "carrying",  "debugger",
-                            "reading"};
-  for (auto w : W)
-    if (!strcmp(st, w)) return true;
-  return false;
-}
-// How long an activity may go silent (no new hook event) before we treat it as
-// stale/abandoned and drop back to calm. Tuned per clip: tools that legitimately
-// run long (Bash builds/tests, subagents, web fetches, compaction) get a roomy
-// window; quick edits/reads recover fast. A genuinely long tool that crosses its
-// window just shows idle until its PostToolUse lands — a minor cosmetic cost in
-// exchange for never being permanently stuck on a WORKING screen.
-static uint32_t actTimeout(const char *st) {
-  if (!strcmp(st, "juggling")) return 600000UL; // subagents (Task) run longest
-  if (!strcmp(st, "building")) return 360000UL; // Bash: builds/installs/tests
-  if (!strcmp(st, "thinking")) return 180000UL; // deep reasoning / web fetch
-  if (!strcmp(st, "sweeping")) return 180000UL; // context compaction
-  if (!strcmp(st, "typing") || !strcmp(st, "reading"))
-    return 90000UL; // edits/reads are quick; recover promptly
-  return 180000UL;  // generic busy / carousel / unknown
-}
-static const char *actVerb(const char *st) {
-  if (!strcmp(st, "typing")) return "Editing...";
-  if (!strcmp(st, "building")) return "Running...";
-  if (!strcmp(st, "thinking")) return "Thinking...";
-  if (!strcmp(st, "reading")) return "Reading...";
-  if (!strcmp(st, "juggling")) return "Delegating...";
-  if (!strcmp(st, "groove")) return "Vibing...";
-  if (!strcmp(st, "carrying")) return "Moving...";
-  if (!strcmp(st, "debugger")) return "Inspecting...";
-  return "Working...";
-}
-
-// Ambient LED "language": a colour + blink rhythm per state (binary RGB, so a
-// breath is a slow blink). blue = working (cooler/quicker as the session heats
-// up), amber = your turn (escalates the longer you ignore it), red = error,
-// green = done, magenta = play, dark = idle. Silenced when Quiet >= "LED off".
-static void driveLed(const char *st, uint32_t now) {
-  if (ledSilenced()) {
-    led.off();
-    return;
-  }
-  bool r = false, g = false, b = false;
-  uint32_t period = 0, onMs = 0; // period 0 -> solid
-
-  if (!strcmp(st, "attention") || !strcmp(st, "notification")) {
-    r = g = true; // amber alert
-    uint32_t waited = waitStart ? now - waitStart : 0;
-    if (waited > 45000) {
-      period = 240;
-      onMs = 120;
-    } // urgent
-    else if (waited > 15000) {
-      period = 600;
-      onMs = 300;
-    } // insistent
-    else {
-      period = 1500;
-      onMs = 850;
-    } // gentle breath
-  } else if (!strcmp(st, "error")) {
-    r = true;
-    period = 360;
-    onMs = 180; // red blink
-  } else if (!strcmp(st, "dizzy") || !strcmp(st, "heart")) {
-    r = b = true; // magenta
-  } else if (!strcmp(st, "celebrate")) {
-    g = true; // green
-  } else if (isWork(st)) {
-    b = true; // blue focus
-    if (intensity >= 2) {
-      g = true;
-      b = true;
-      r = false; // cyan, quick
-      period = 520;
-      onMs = 300;
-    } else if (intensity == 1) {
-      period = 1100;
-      onMs = 650;
-    } else {
-      period = 1800;
-      onMs = 1050; // calm breath
-    }
-  } else {
-    led.off();
-    return; // idle / sleep: dark
-  }
-
-  bool on = (period == 0) ? true : ((now % period) < onMs);
-  if (on)
-    led.set(r, g, b);
-  else
-    led.off();
-}
-
-static uint16_t stateColor(const char *st) {
-  if (isWork(st)) return C_CORAL;                // orange (working)
-  if (!strcmp(st, "dizzy")) return 0xA81F;       // purple
-  if (!strcmp(st, "attention") || !strcmp(st, "notification")) return 0xFD20; // amber alert
-  if (!strcmp(st, "error")) return 0xC1C5;       // muted red
-  if (!strcmp(st, "celebrate")) return 0x2DEA;   // green
-  if (!strcmp(st, "heart")) return 0xFB56;        // pink
-  if (!strcmp(st, "idle")) return 0x2DEA;        // green (connected, ready)
-  return 0x4208;                                 // asleep grey
-}
-static const char *stateLabel(const char *st) {
-  if (isWork(st)) return "WORKING";
-  if (!strcmp(st, "dizzy")) return "DIZZY";
-  if (!strcmp(st, "attention") || !strcmp(st, "notification")) return "NEEDS YOU";
-  if (!strcmp(st, "error")) return "OOPS";
-  if (!strcmp(st, "celebrate")) return "DONE!";
-  if (!strcmp(st, "heart")) return "HELLO";
-  if (!strcmp(st, "idle")) return "READY";
-  return "ASLEEP";
-}
-
 // Animated (eased) copies of the live counters, so a value rolls toward its new
 // total like an odometer instead of snapping.
 static long long dToday = 0, dAll = 0;
@@ -395,7 +256,7 @@ static void drawStatValues(int W, int cy, bool force) {
   char tok[12], all[12], dur[14], nt[8], nu[8], ns[8];
   fmtTok(dToday, tok, sizeof(tok));
   fmtTok(dAll, all, sizeof(all));
-  fmtDur(sessionStart ? (millis() - sessionStart) : 0, dur, sizeof(dur));
+  fmtDur(ctx.sessionStart ? (millis() - ctx.sessionStart) : 0, dur, sizeof(dur));
   snprintf(nt, sizeof(nt), "%d", dTools);
   snprintf(nu, sizeof(nu), "%d", dTurns);
   snprintf(ns, sizeof(ns), "%d", dSess);
@@ -414,7 +275,7 @@ static void renderIntensity() {
   TFT_eSPI &t = display.tft();
   int W = t.width();
   t.fillRect(W - 56, 6, 36, 15, TFT_BLACK);
-  for (int i = 0; i < intensity; i++)
+  for (int i = 0; i < ctx.intensity; i++)
     t.fillCircle(W - 30 - i * 11, 13, 3, C_CORAL);
 }
 
@@ -577,7 +438,7 @@ static void renderStats(bool full) {
   row("Tool calls", String(s.tools));
   row("Sessions", String(s.sessions));
   row("Turns", String(s.turns));
-  fmtDur(sessionStart ? (millis() - sessionStart) : 0, b, sizeof(b));
+  fmtDur(ctx.sessionStart ? (millis() - ctx.sessionStart) : 0, b, sizeof(b));
   row("Session", String(b));
   row("Project", s.project.length() ? s.project : String("-"));
   snprintf(b, sizeof(b), "%lu min", (unsigned long)(millis() / 60000UL));
@@ -594,12 +455,12 @@ static void renderSettings() {
   gtext("Settings", W / 2, 16, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK,
         TC_DATUM);
   char quiet[20], bri[20];
-  snprintf(quiet, sizeof(quiet), "Quiet: %s", dndOn ? "on" : "off");
-  snprintf(bri, sizeof(bri), "Brightness: %d%%", brightPct);
+  snprintf(quiet, sizeof(quiet), "Quiet: %s", ctx.dnd ? "on" : "off");
+  snprintf(bri, sizeof(bri), "Brightness: %d%%", ctx.brightPct);
   const char *labels[7] = {"Stats", quiet, bri, "Recalibrate",
                            "WiFi setup", "Power off", "Close"};
   for (int i = 0; i < 7; i++)
-    drawButton(setBtns[i], labels[i], (i == 1 && dndOn) ? 0x7B40 : C_FACE);
+    drawButton(setBtns[i], labels[i], (i == 1 && ctx.dnd) ? 0x7B40 : C_FACE);
 }
 
 static void renderWifiConfirm() {
@@ -667,16 +528,16 @@ static void handleSettingsTap(int x, int y) {
       statsOpen = true;
       renderStats(true);
     } else if (i == 1) { // toggle Quiet / Do Not Disturb (persisted)
-      dndOn = !dndOn;
-      storage.putInt("dnd", dndOn ? 1 : 0);
-      if (dndOn)
+      ctx.dnd = !ctx.dnd;
+      storage.putInt("dnd", ctx.dnd ? 1 : 0);
+      if (ctx.dnd)
         led.off(); // apply the LED silence immediately
       renderSettings();
     } else if (i == 2) { // cycle backlight brightness 100 -> 70 -> 40 (persisted)
-      brightPct = brightPct > 70 ? 70 : (brightPct > 40 ? 40 : 100);
-      display.setBrightness(brightPct);
+      ctx.brightPct = ctx.brightPct > 70 ? 70 : (ctx.brightPct > 40 ? 40 : 100);
+      display.setBrightness(ctx.brightPct);
       display.backlight(true); // apply immediately
-      storage.putInt("bright", brightPct);
+      storage.putInt("bright", ctx.brightPct);
       renderSettings();
     } else if (i == 3) { // recalibrate touch (shows visible targets)
       settingsOpen = false;
@@ -710,9 +571,9 @@ void setup() {
 
   // restore persisted prefs (Quiet/DND + backlight brightness); migrate the old
   // 3-level "quiet" key (>=1 -> on) for anyone upgrading.
-  dndOn = storage.getInt("dnd", storage.getInt("quiet", 0) >= 1 ? 1 : 0) != 0;
-  brightPct = storage.getInt("bright", 100);
-  display.setBrightness(brightPct);
+  ctx.dnd = storage.getInt("dnd", storage.getInt("quiet", 0) >= 1 ? 1 : 0) != 0;
+  ctx.brightPct = storage.getInt("bright", 100);
+  display.setBrightness(ctx.brightPct);
   display.backlight(true);
 
   net::server.setToken(loadOrCreateToken());
@@ -843,9 +704,9 @@ void loop() {
   // so a session that begins during sleep stamps the real start, not wake time.
   static int prevTotal = 0;
   if (s.total > 0 && prevTotal == 0)
-    sessionStart = now;
+    ctx.sessionStart = now;
   else if (s.total == 0)
-    sessionStart = 0;
+    ctx.sessionStart = 0;
   prevTotal = s.total;
 
   // While asleep, skip the full (filtered) touch read -- the wake check below
@@ -1093,8 +954,8 @@ void loop() {
 
   // ---- session-intensity tier -> clip speed/tint + top-bar pips ----
   int tier = isWork(st) ? intensityTier(s.burst, s.agents) : 0;
-  if (tier != intensity) {
-    intensity = tier;
+  if (tier != ctx.intensity) {
+    ctx.intensity = tier;
     renderIntensity();
     if (haveChar) {
       render::character.setSpeed(tier >= 2 ? 122 : (tier == 1 ? 110 : 100));
@@ -1140,7 +1001,7 @@ void loop() {
   static uint32_t ledT = 0;
   if (now - ledT > 100) {
     ledT = now;
-    driveLed(st, now);
+    driveLed(led, st, now, ctx.intensity, waitStart, ledSilenced());
   }
 
   // ---- roll the stat counters toward their live targets (odometer feel);
@@ -1154,7 +1015,7 @@ void loop() {
     ch |= tickTowardI(dTools, s.tools);
     ch |= tickTowardI(dTurns, s.turns);
     ch |= tickTowardI(dSess, s.sessions);
-    uint32_t durSec = sessionStart ? (now - sessionStart) / 1000 : 0;
+    uint32_t durSec = ctx.sessionStart ? (now - ctx.sessionStart) / 1000 : 0;
     if (durSec != lastDurSec) {
       lastDurSec = durSec;
       ch = true;
