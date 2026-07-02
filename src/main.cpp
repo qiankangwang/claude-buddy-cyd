@@ -1,6 +1,4 @@
 #include <Arduino.h>
-#include <esp_random.h>
-#include <esp_sleep.h>
 #include "hal/display.h" // pulls in TFT_eSPI (GFX free fonts come with LOAD_GFXFF)
 #include "hal/storage.h"
 #include "hal/touch.h"
@@ -10,6 +8,8 @@
 #include "app/ctx.h"
 #include "app/activity.h"
 #include "app/led_language.h"
+#include "app/store.h"
+#include "app/power.h"
 #include "ui/theme.h"
 #include "ui/text.h"
 #include "ui/widgets.h"
@@ -102,104 +102,6 @@ static void computeButtons() {
   // so centre a roomy pill there as the dismiss call-to-action.
   int aw = 150, ah = 46, cardTop = REG_Y + REG_H;
   ackBtn = {(W - aw) / 2, cardTop + (H - cardTop - ah) / 2, aw, ah};
-}
-
-static String loadOrCreateToken() {
-  char buf[17];
-  if (storage.getBytes("token", buf, 16)) {
-    buf[16] = 0;
-    return String(buf);
-  }
-  char out[17];
-  for (int i = 0; i < 8; i++)
-    sprintf(out + i * 2, "%02x", (unsigned)(esp_random() & 0xFF));
-  out[16] = 0;
-  storage.putBytes("token", out, 16);
-  return String(out);
-}
-
-// ---- stats persistence (survive an unplug) ---------------------------------
-// The PC hook is the source of truth: it recomputes today/all-time from the
-// transcripts and re-pushes a full snapshot on the next event. So the device
-// only needs a *display cache* -- mirror the last snapshot to NVS and restore it
-// on boot, so a replug shows the last numbers immediately instead of zeros until
-// Claude next does something. The first /event after boot overwrites these with
-// the authoritative totals, so the device never accumulates locally and a
-// restore can't double-count. Persisted counters only (running/waiting stay 0).
-#define STATS_MAGIC 0xC4D50001u  // bump the low word to invalidate old blobs
-#define STATS_SAVE_MS 60000UL    // min interval between NVS commits (flash wear)
-struct StatsBlob {
-  uint32_t magic;
-  long long tokensAll;
-  long tokens;
-  long budget;
-  int total, tools, turns, sessions;
-  char project[28]; // hook caps the project name at 24 chars
-};
-
-static void fillStatsBlob(StatsBlob &b) {
-  net::AppState &s = net::server.state();
-  memset(&b, 0, sizeof(b)); // zero padding too, so memcmp is stable
-  b.magic = STATS_MAGIC;
-  b.tokensAll = s.tokensAll;
-  b.tokens = s.tokens;
-  b.budget = s.budget;
-  b.total = s.total;
-  b.tools = s.tools;
-  b.turns = s.turns;
-  b.sessions = s.sessions;
-  strncpy(b.project, s.project.c_str(), sizeof(b.project) - 1);
-}
-
-// Restore the cached snapshot into AppState (called once at boot).
-static void restoreStats() {
-  StatsBlob b = {};
-  if (!storage.getBytes("stats", &b, sizeof(b)) || b.magic != STATS_MAGIC) {
-    Serial.println("[stats] no saved snapshot (first boot or version bump)");
-    return; // no valid blob (first boot, or a version bump invalidated it)
-  }
-  net::AppState &s = net::server.state();
-  s.tokensAll = b.tokensAll;
-  s.tokens = b.tokens;
-  s.budget = b.budget;
-  s.tools = b.tools;
-  s.turns = b.turns;
-  s.sessions = b.sessions;
-  s.project = b.project;
-  // Show the stats card on boot whenever we have real history -- even if the last
-  // saved event was a SessionEnd (total=0), which would otherwise make stateName()
-  // fall back to "asleep" and hide the very numbers we just restored. The next
-  // hook event overwrites total with the live value.
-  bool haveData = b.tokensAll > 0 || b.tokens > 0 || b.tools > 0 || b.turns > 0;
-  s.total = (b.total > 0) ? b.total : (haveData ? 1 : 0);
-  Serial.printf("[stats] restored tokAll=%lld today=%ld tools=%d turns=%d sess=%d total=%d\n",
-                (long long)s.tokensAll, s.tokens, s.tools, s.turns, s.sessions, s.total);
-}
-
-// Write the snapshot to NVS, but only when a counter actually changed -- NVS has
-// finite write endurance and the hook can fire many events a minute, so a blind
-// write-per-event would wear the flash. force=true bypasses the time throttle
-// (used at natural pauses: screen-off / power-off) but still skips a no-op write.
-static bool saveStatsIfChanged(bool force) {
-  static StatsBlob last; // zero-initialised: magic 0 != STATS_MAGIC -> first
-                         // real call always differs and commits once.
-  static uint32_t lastSaveMs = 0;
-  StatsBlob cur;
-  fillStatsBlob(cur);
-  if (memcmp(&cur, &last, sizeof(cur)) == 0)
-    return false; // nothing new to persist
-  uint32_t now = millis();
-  if (!force && lastSaveMs && now - lastSaveMs < STATS_SAVE_MS)
-    return false; // throttle: at most one commit per STATS_SAVE_MS
-  if (!storage.putBytes("stats", &cur, sizeof(cur))) {
-    Serial.println("[stats] NVS write FAILED");
-    return false;
-  }
-  last = cur;
-  lastSaveMs = now;
-  Serial.printf("[stats] saved tokAll=%lld today=%ld tools=%d total=%d (force=%d)\n",
-                (long long)cur.tokensAll, cur.tokens, cur.tools, cur.total, force ? 1 : 0);
-  return true;
 }
 
 static const char *stateName(uint32_t now) {
@@ -495,30 +397,6 @@ static void renderAsk() {
   drawButton(approveBtn, "Allow", C_OK);
 }
 
-// Deep-sleep "power off": go dark and draw ~no power. Wakes on a screen touch
-// (XPT2046 PENIRQ on GPIO36 pulls low when touched) or the board's RST button;
-// either way the device cold-boots straight back into the dashboard.
-static void powerOff() {
-  TFT_eSPI &t = display.tft();
-  int W = t.width(), H = t.height();
-  led.off();
-  saveStatsIfChanged(true); // persist before deep sleep (wakes as a cold boot)
-  t.fillScreen(TFT_BLACK);
-  gtext("Powering off", W / 2, H / 2 - 12, &FreeSansBold18pt7b, C_CORAL,
-        TFT_BLACK, MC_DATUM);
-  gtext("tap screen or RST to wake", W / 2, H / 2 + 20, &FreeSans9pt7b, C_MUTED,
-        TFT_BLACK, MC_DATUM);
-  delay(1400); // let the message register before the screen cuts
-  // wait for the selecting tap to lift, or the held touch would wake us at once
-  for (uint32_t t0 = millis(); touch.rawPressed() && millis() - t0 < 15000;)
-    delay(10);
-  delay(200);
-  display.backlight(false);
-  led.off();
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)36, 0); // wake when PENIRQ goes low
-  esp_deep_sleep_start();                           // does not return
-}
-
 static void handleSettingsTap(int x, int y) {
   for (int i = 0; i < 7; i++) {
     if (!inRect(setBtns[i], x, y))
@@ -548,7 +426,7 @@ static void handleSettingsTap(int x, int y) {
       wifiConfirmOpen = true;
       renderWifiConfirm();
     } else if (i == 5) { // power off -> deep sleep (tap screen / RST to wake)
-      powerOff();        // does not return
+      powerOff(display, touch, led, storage); // does not return
     } else { // close (i == 6)
       settingsOpen = false;
       forceRedraw = true;
@@ -576,11 +454,11 @@ void setup() {
   display.setBrightness(ctx.brightPct);
   display.backlight(true);
 
-  net::server.setToken(loadOrCreateToken());
+  net::server.setToken(loadOrCreateToken(storage));
 
   // restore the last stats snapshot so a replug shows the previous numbers
   // immediately (the next hook event re-asserts the authoritative totals).
-  restoreStats();
+  restoreStats(storage);
   // seed the odometer counters from the restored values so they read true at
   // once instead of rolling up from zero on the first frame after WiFi connects.
   {
@@ -631,7 +509,7 @@ void loop() {
   // Mirror the latest counters to NVS (throttled + only-on-change) so an unplug
   // restores them on the next boot. Runs before any early return below so it
   // still ticks while the screen is asleep or a menu/panel is open.
-  saveStatsIfChanged(false);
+  saveStatsIfChanged(storage, false);
 
   // ---- transient hook effect (attention/celebrate/heart): edge-trigger once
   //      per event; wakes the screen so a "needs you" / "done" isn't missed ----
@@ -893,7 +771,7 @@ void loop() {
   if (screenOn && calm && idleFor > SCREEN_OFF_MS) {
     screenOn = false;
     dimmed = false;
-    saveStatsIfChanged(true); // checkpoint before going dark (likely unplug point)
+    saveStatsIfChanged(storage, true); // checkpoint before going dark (likely unplug point)
     display.backlight(false);
     led.off();
     setCpuFrequencyMhz(80); // still tracking over WiFi, but at the WiFi-safe
