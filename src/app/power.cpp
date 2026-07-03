@@ -2,20 +2,23 @@
 #include <esp_sleep.h>
 #include "store.h"
 #include "history.h"
+#include "battery.h"
 #include "ui/text.h"
 #include "ui/theme.h"
 
 namespace app {
 
 void powerOff(hal::Display &display, hal::Touch &touch, hal::Led &led,
-              hal::Storage &storage) {
+              hal::Storage &storage, const char *title) {
   TFT_eSPI &t = display.tft();
   int W = t.width(), H = t.height();
   led.off();
   saveStatsIfChanged(storage, true); // persist before deep sleep (wakes as a cold boot)
   historySaveIfChanged(storage, true);
+  battery::noteDeepSleep(); // stamp the sleep start so boot can charge the gap
   t.fillScreen(TFT_BLACK);
-  ui::gtext("Powering off", W / 2, H / 2 - 12, &FreeSansBold18pt7b, C_CORAL,
+  // 12pt bold: the default copy AND "Battery low - charge me" both fit 240px
+  ui::gtext(title, W / 2, H / 2 - 12, &FreeSansBold12pt7b, C_CORAL,
             TFT_BLACK, MC_DATUM);
   ui::gtext("tap screen or RST to wake", W / 2, H / 2 + 20, &FreeSans9pt7b,
             C_MUTED, TFT_BLACK, MC_DATUM);

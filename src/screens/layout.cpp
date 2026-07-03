@@ -5,15 +5,15 @@ namespace screens {
 
 ui::Rect denyBtn, approveBtn;
 ui::Rect ackBtn;
-ui::Rect setBtns[7];
+ui::Rect setBtns[8];
 
 void computeButtons(TFT_eSPI &t) {
   int W = t.width(), H = t.height();
   int bh = 56, m = 8;
   denyBtn = {m, H - bh - 6, (W - 3 * m) / 2, bh};
   approveBtn = {denyBtn.x + denyBtn.w + m, H - bh - 6, (W - 3 * m) / 2, bh};
-  int sy = 46, sbh = 32, gap = 6; // 7 rows fit 240x320 (46 + 7*38 = 312)
-  for (int i = 0; i < 7; i++)
+  int sy = 46, sbh = 28, gap = 5; // 8 rows fit 240x320 (46 + 8*33 = 310)
+  for (int i = 0; i < 8; i++)
     setBtns[i] = {20, sy + i * (sbh + gap), W - 40, sbh};
   // "Got it" button: the cardless needs-you screen frees the whole lower third,
   // so centre a roomy pill there as the dismiss call-to-action.

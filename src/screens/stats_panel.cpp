@@ -1,5 +1,6 @@
 #include "stats_panel.h"
 #include "app/ctx.h"
+#include "app/battery.h"
 #include "net/server.h"
 #include "ui/text.h"
 #include "ui/theme.h"
@@ -19,10 +20,10 @@ void renderStats(bool full) {
   }
   // label left, value right-aligned to the screen edge and clamped so long
   // values (IP / project / big token counts) can't run off the right side.
-  // dy=20 (not 22): 12 rows + the "tap to close" hint must share 320px. At 22 the
-  // last row (IP, y=290) sits so low its value-clear band overlaps the hint and
-  // eats "to close" -> only "tap" survives. Tightening the pitch lifts IP to 268.
-  int lx = 18, rx = W - 18, y = 48, dy = 20, vMax = W - 18 - 108;
+  // dy=19 (was 20, before that 22): now 13 rows + the "tap to close" hint must
+  // share 320px. Looser pitches push the last row's value-clear band into the
+  // hint and eat "to close" -> only "tap" survives. 19 lifts IP back to 276.
+  int lx = 18, rx = W - 18, y = 48, dy = 19, vMax = W - 18 - 108;
   char b[24];
   auto row = [&](const char *k, const String &v) {
     // Sprite-blit the value cell (TOP datum, glyph at y..y+~17) so a live refresh
@@ -52,6 +53,9 @@ void renderStats(bool full) {
   ui::fmtDur(app::ctx.sessionStart ? (millis() - app::ctx.sessionStart) : 0, b,
              sizeof(b));
   row("Session", String(b));
+  snprintf(b, sizeof(b), "~%d%% / %.1fh", app::battery::percent(),
+           app::battery::hoursLeft(true, app::ctx.brightPct));
+  row("Battery (est)", String(b));
   row("Project", s.project.length() ? s.project : String("-"));
   snprintf(b, sizeof(b), "%lu min", (unsigned long)(millis() / 60000UL));
   row("Uptime", String(b));

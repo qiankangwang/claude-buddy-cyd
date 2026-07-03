@@ -13,6 +13,7 @@
 #include "app/store.h"
 #include "app/history.h"
 #include "app/power.h"
+#include "app/battery.h"
 #include "ui/theme.h"
 #include "ui/text.h"
 #include "ui/widgets.h"
@@ -80,6 +81,7 @@ static uint32_t pressStart = 0;
 static bool longFired = false;
 
 #define SCREEN_OFF_MS 30000UL
+#define BUSY_OFF_MS 180000UL // while Claude works: longer leash, then sleep too
 #define PRESLEEP_MS 8000UL // dim the backlight this long before the full cut-off
 
 // ---- enrichment state -------------------------------------------------------
@@ -179,7 +181,7 @@ static void otaSetup() {
 static int effectiveBright(); // ambient-light section below
 
 static void handleSettingsTap(int x, int y) {
-  for (int i = 0; i < 7; i++) {
+  for (int i = 0; i < 8; i++) {
     if (!inRect(setBtns[i], x, y))
       continue;
     if (i == 0) { // open the stats panel
@@ -209,17 +211,20 @@ static void handleSettingsTap(int x, int y) {
       storage.putInt("bright", ctx.brightPct);
       storage.putInt("adim", ctx.autoDim ? 1 : 0);
       renderSettings();
-    } else if (i == 3) { // recalibrate touch (shows visible targets)
+    } else if (i == 3) { // battery: the user says it's freshly charged
+      battery::resetFull();
+      renderSettings(); // label re-reads the (now 100%) estimate
+    } else if (i == 4) { // recalibrate touch (shows visible targets)
       settingsOpen = false;
       touch.calibrate(display);
       forceRedraw = true;
-    } else if (i == 4) { // WiFi setup -> confirm first (avoids accidental taps)
+    } else if (i == 5) { // WiFi setup -> confirm first (avoids accidental taps)
       settingsOpen = false;
       wifiConfirmOpen = true;
       renderWifiConfirm();
-    } else if (i == 5) { // power off -> deep sleep (tap screen / RST to wake)
+    } else if (i == 6) { // power off -> deep sleep (tap screen / RST to wake)
       powerOff(display, touch, led, storage); // does not return
-    } else { // close (i == 6)
+    } else { // close (i == 7)
       settingsOpen = false;
       forceRedraw = true;
     }
@@ -313,6 +318,22 @@ static void pollBootButton(uint32_t now) {
   }
 }
 
+// ---- software battery gauge: integrate the draw model, repaint the top-bar
+// glyph when its bucket moves, and put the cell to bed before it runs flat.
+// The shutdown check is armed only past a boot grace period so a
+// freshly-charged device whose gauge still *reads* empty can be woken and
+// reset via Settings -> Battery instead of shutting down in a loop.
+#define BATT_SHUTDOWN_PCT 5
+#define BATT_BOOT_GRACE_MS 180000UL
+static void pollBattery(uint32_t now) {
+  battery::tick(now, screenOn, effectiveBright());
+  if (screenOn && !settingsOpen && !statsOpen && !wifiConfirmOpen && !askOpen)
+    renderBatteryIfChanged(); // home/needs-you top bar owns the glyph cell
+  if (now > BATT_BOOT_GRACE_MS && battery::percent() <= BATT_SHUTDOWN_PCT)
+    powerOff(display, touch, led, storage,
+             "Battery low - charge me"); // saves stats; does not return
+}
+
 void setup() {
   Serial.begin(115200);
   delay(200);
@@ -340,6 +361,7 @@ void setup() {
   // immediately (the next hook event re-asserts the authoritative totals).
   restoreStats(storage);
   historyRestore(storage);
+  battery::begin(storage); // software fuel gauge (docs/battery-gauge-spec.md)
   // seed the odometer counters from the restored values so they read true at
   // once instead of rolling up from zero on the first frame after WiFi connects.
   seedStats();
@@ -381,6 +403,7 @@ void loop() {
   net::AppState &s = net::server.state();
   display.tick(now); // step any backlight glide (pre-sleep fade, auto-dim)
   pollAmbient(now);  // ambient-light night-dim ("Brightness: auto")
+  pollBattery(now);  // battery gauge tick + glyph + low-battery guard
 
   // WiFi OTA: arm once the link first comes up, then service it every loop
   // (before the screen-off early-returns below, so a dark device still updates).
@@ -495,13 +518,19 @@ void loop() {
     ty = heldY;
   }
 
-  // ---- asleep: a touch, Claude starting work, or an escalated "your turn"
+  // ---- asleep: a touch, Claude STARTING work, or an escalated "your turn"
   //      nudge wakes us (once per wait, unless DND); else stay dark ----
+  // Wake-on-work is EDGE-triggered (idle -> working), not level: the screen
+  // now sleeps during long work sessions too (BUSY_OFF_MS), and a level test
+  // would relight it the moment it dozed off.
+  static int prevRunning = 0;
+  bool runStarted = s.running > 0 && prevRunning == 0;
+  prevRunning = s.running;
   if (!screenOn) {
     bool nudgeWake = s.waiting && !autoWakeBlocked() && !waitAcked && waitStart &&
                      (now - waitStart > 45000) &&
                      timeBefore(lastNudgeWake, waitStart);
-    if (touch.rawPressed() || s.running > 0 || nudgeWake) {
+    if (touch.rawPressed() || runStarted || nudgeWake) {
       if (nudgeWake)
         lastNudgeWake = now; // fire the screen-wake just once per wait episode
       screenOn = true;
@@ -679,11 +708,14 @@ void loop() {
 
   const char *st = stateName(now);
 
-  // ---- auto screen-off when calm; PWM-dim for a few seconds first ----
-  bool calm = s.running == 0 && !timeBefore(now, dizzyUntil) &&
-              !timeBefore(now, fxUntil);
+  // ---- auto screen-off; PWM-dim for a few seconds first. Working sessions
+  //      sleep too, just on a longer leash (BUSY_OFF_MS): a marathon turn
+  //      shouldn't keep the backlight burning the battery. Fresh work, nudges
+  //      and fx still wake the screen, so nothing important goes unseen. ----
+  bool quiet = !timeBefore(now, dizzyUntil) && !timeBefore(now, fxUntil);
+  uint32_t offAfter = s.running > 0 ? BUSY_OFF_MS : SCREEN_OFF_MS;
   uint32_t idleFor = now - lastInteraction;
-  if (screenOn && calm && idleFor > SCREEN_OFF_MS) {
+  if (screenOn && quiet && idleFor > offAfter) {
     screenOn = false;
     dimmed = false;
     setCard(0); // wake back up on the familiar stats page
@@ -696,7 +728,7 @@ void loop() {
   } else if (screenOn) {
     // pre-sleep fade: ease the backlight down in the last PRESLEEP_MS so the
     // cut-off isn't an abrupt blackout (also a subtle "about to sleep" cue).
-    bool wantDim = calm && idleFor > (SCREEN_OFF_MS - PRESLEEP_MS);
+    bool wantDim = quiet && idleFor > (offAfter - PRESLEEP_MS);
     if (wantDim && !dimmed) {
       dimmed = true;
       display.glideTo(20); // ease down instead of snapping

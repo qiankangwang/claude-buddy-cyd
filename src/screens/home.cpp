@@ -3,6 +3,7 @@
 #include "trends.h"
 #include "app/ctx.h"
 #include "app/activity.h"
+#include "app/battery.h"
 #include "net/server.h"
 #include "render/character.h"
 #include "ui/text.h"
@@ -83,6 +84,34 @@ void renderIntensity() {
     t.fillCircle(W - 30 - i * 11, 13, 3, C_CORAL);
 }
 
+// Battery glyph: outline + nub + fill in 5% buckets, between the label band
+// and the intensity pips. Muted while healthy, amber under 20%, red under 10%
+// (docs/battery-gauge-spec.md). It's an estimate -- no percent text up here;
+// the exact figure lives in the Stats panel and the Settings row.
+void renderBattery() {
+  TFT_eSPI &t = tft();
+  int W = t.width();
+  int pct = app::battery::percent();
+  uint16_t col = pct >= 20 ? C_MUTED : (pct >= 10 ? 0xFD20 : C_NO);
+  int x = W - 82, y = 8, w = 17, h = 11;
+  t.fillRect(x, y, w + 3, h, TFT_BLACK); // clear the cell (nub included)
+  t.drawRoundRect(x, y, w, h, 2, col);
+  t.fillRect(x + w + 1, y + 3, 2, h - 6, col); // battery nub
+  int fw = (w - 4) * pct / 100;
+  if (fw > 0)
+    t.fillRect(x + 2, y + 2, fw, h - 4, col);
+}
+
+void renderBatteryIfChanged() {
+  static int lastKey = -1;
+  int pct = app::battery::percent();
+  int key = (pct / 5) * 10 + (pct >= 20 ? 0 : (pct >= 10 ? 1 : 2));
+  if (key == lastKey)
+    return;
+  lastKey = key;
+  renderBattery();
+}
+
 // Daily-budget gauge: the card's divider becomes a thin progress bar when a
 // budget is configured (coral -> amber near the cap -> red over). Uses the
 // animated token count (dToday) so it eases with the odometer.
@@ -141,8 +170,8 @@ void renderStatusBar(const char *st) {
   net::AppState &s = net::server.state();
   int W = t.width();
   t.fillCircle(13, 13, 5, stateColor(st));
-  blitText(26, 2, (W - 60) - 26, 24, stateLabel(st), 26, 14, &FreeSansBold9pt7b,
-           C_TEXT, TFT_BLACK, ML_DATUM, (W - 60) - 26);
+  blitText(26, 2, (W - 84) - 26, 24, stateLabel(st), 26, 14, &FreeSansBold9pt7b,
+           C_TEXT, TFT_BLACK, ML_DATUM, (W - 84) - 26);
   t.fillCircle(W - 13, 13, 4, s.wifiUp ? 0x2DEA : 0x9000);
 }
 
@@ -157,6 +186,7 @@ void renderStatic(const char *st) {
   gtext(stateLabel(st), 26, 14, &FreeSansBold9pt7b, C_TEXT, TFT_BLACK, ML_DATUM);
   t.fillCircle(W - 13, 13, 4, s.wifiUp ? 0x2DEA : 0x9000); // link indicator
   renderIntensity(); // session-intensity pips
+  renderBattery();   // battery gauge glyph
 
   // bottom stats card (just below the character region; cy = REG_Y+REG_H+4)
   int cy = REG_Y + REG_H + 4;

@@ -26,6 +26,12 @@ void renderHeadline(const char *st);
 // Session-intensity pips in the top bar (1 dot busy, 2 intense, none calm).
 void renderIntensity();
 
+// Top-bar battery glyph (software gauge). renderBattery draws unconditionally
+// (full repaints); renderBatteryIfChanged repaints only when the 5% bucket or
+// warning color moved, so the loop can call it cheaply.
+void renderBattery();
+void renderBatteryIfChanged();
+
 // Seed the odometer counters from the (restored) live values at boot, so they
 // read true at once instead of rolling up from zero on the first frame.
 void seedStats();
