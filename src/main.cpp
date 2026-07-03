@@ -186,17 +186,19 @@ static void handleSettingsTap(int x, int y) {
   for (int i = 0; i < 7; i++) {
     if (!inRect(setBtns[i], x, y))
       continue;
-    if (i == 0) { // open the stats panel
+    if (i == 0) { // power off -> deep sleep (tap screen / RST to wake)
+      powerOff(display, touch, led, storage); // does not return
+    } else if (i == 1) { // open the stats panel
       settingsOpen = false;
       statsOpen = true;
       renderStats(true);
-    } else if (i == 1) { // toggle Quiet / Do Not Disturb (persisted)
+    } else if (i == 2) { // toggle Quiet / Do Not Disturb (persisted)
       ctx.dnd = !ctx.dnd;
       storage.putInt("dnd", ctx.dnd ? 1 : 0);
       if (ctx.dnd)
         led.off(); // apply the LED silence immediately
       renderSettings();
-    } else if (i == 2) { // cycle 100 -> 70 -> 40 -> auto (LDR night-dim)
+    } else if (i == 3) { // cycle 100 -> 70 -> 40 -> auto (LDR night-dim)
       if (ctx.autoDim) {
         ctx.autoDim = false;
         ctx.brightPct = 100;
@@ -213,16 +215,14 @@ static void handleSettingsTap(int x, int y) {
       storage.putInt("bright", ctx.brightPct);
       storage.putInt("adim", ctx.autoDim ? 1 : 0);
       renderSettings();
-    } else if (i == 3) { // recalibrate touch (shows visible targets)
+    } else if (i == 4) { // recalibrate touch (shows visible targets)
       settingsOpen = false;
       touch.calibrate(display);
       forceRedraw = true;
-    } else if (i == 4) { // WiFi setup -> confirm first (avoids accidental taps)
+    } else if (i == 5) { // WiFi setup -> confirm first (avoids accidental taps)
       settingsOpen = false;
       wifiConfirmOpen = true;
       renderWifiConfirm();
-    } else if (i == 5) { // power off -> deep sleep (tap screen / RST to wake)
-      powerOff(display, touch, led, storage); // does not return
     } else { // close (i == 6)
       settingsOpen = false;
       forceRedraw = true;

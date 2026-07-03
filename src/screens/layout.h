@@ -9,7 +9,7 @@ namespace screens {
 // rows, and the "Got it" pill on the needs-you screen.
 extern ui::Rect denyBtn, approveBtn;
 extern ui::Rect ackBtn; // "Got it" pill on the needs-you screen (dismisses -> idle)
-// Settings: Stats / Quiet / Brightness / Recalibrate / WiFi / Power off / Close
+// Settings: Power off / Stats / Quiet / Brightness / Recalibrate / WiFi / Close
 extern ui::Rect setBtns[7];
 
 void computeButtons(TFT_eSPI &t);

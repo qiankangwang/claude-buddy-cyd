@@ -291,16 +291,17 @@ merged); if two machines push at once, the device shows whichever pushed last.
 - **BOOT key** (the physical button next to RST) — short press wakes the screen
   or taps **Got it** for you; holding it toggles **Quiet** (one red blink = on,
   green = off). Handy when tapping the resistive panel is inconvenient.
-- **Long-press (~1 s)** — open **Settings**: **Stats** (full live panel),
+- **Long-press (~1 s)** — open **Settings**: **Power off** (top row, in red —
+  deep sleep: screen, LED and WiFi off; tap the screen or press the board's
+  **RST** button to turn it back on), **Stats** (full live panel),
   **Quiet** (on/off Do Not Disturb — silences the RGB LED and stops the screen
   auto-waking for nudges; only your touch wakes it), **Brightness** (cycle the
   backlight 100 / 70 / 40 % / **auto** — auto night-dims to 25% when the onboard
   light sensor says the room went dark, and eases back up when the lights come
   on), **Recalibrate** (3-point touch calibration; times out safely
   if you walk away), **WiFi setup** (re-open the captive portal — keeps the saved
-  password unless you enter a new network), **Power off** (deep sleep — screen,
-  LED and WiFi off; tap the screen or press the board's **RST** button to turn it
-  back on), **Close**. Quiet and brightness persist across reboots.
+  password unless you enter a new network), **Close**. Quiet and brightness
+  persist across reboots.
 - Auto **screen-off after 30 s** of calm — or **3 min while Claude is working**,
   so long grinds go dark too; a touch, a fresh turn starting, or a nudge wakes
   it. After **an hour** with no touch and no Claude activity at all the device

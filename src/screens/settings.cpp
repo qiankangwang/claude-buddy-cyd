@@ -20,11 +20,14 @@ void renderSettings() {
     snprintf(bri, sizeof(bri), "Brightness: %d%%", app::ctx.brightPct);
   // NOTE: no Battery row on purpose -- the gauge is fully automatic (top-bar
   // glyph + Stats panel show it) and a tappable row was too easy to fat-finger.
-  const char *labels[7] = {"Stats", quiet, bri, "Recalibrate",
-                           "WiFi setup", "Power off", "Close"};
+  // Power off sits on top, in red -- it's the row reached for most, and the
+  // color keeps it unmistakable (waking back up is a single tap, so a stray
+  // hit costs nothing).
+  const char *labels[7] = {"Power off", "Stats", quiet, bri,
+                           "Recalibrate", "WiFi setup", "Close"};
   for (int i = 0; i < 7; i++)
     ui::drawButton(setBtns[i], labels[i],
-                   (i == 1 && app::ctx.dnd) ? 0x7B40 : C_FACE);
+                   i == 0 ? C_NO : (i == 2 && app::ctx.dnd) ? 0x7B40 : C_FACE);
 }
 
 } // namespace screens
