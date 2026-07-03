@@ -98,11 +98,17 @@ static uint32_t lastNudgeWake = 0; // throttle escalated screen wakes
 // home screen) and stops nudging. Bound to the wait episode: a fresh wait (new
 // waitId) re-arms the full escalation.
 static bool waitAcked = false;
+// Rollover-safe deadline check: millis() wraps every ~49.7 days, and this is an
+// always-plugged-in desk gadget, so absolute compares against a deadline would
+// glitch once per wrap. Signed difference is correct across the wrap.
+static inline bool timeBefore(uint32_t a, uint32_t b) {
+  return (int32_t)(a - b) < 0;
+}
 static const char *stateName(uint32_t now) {
   net::AppState &s = net::server.state();
-  if (now < fxUntil)
+  if (timeBefore(now, fxUntil))
     return fxState.c_str(); // transient hook effect (attention/celebrate/heart)
-  if (now < dizzyUntil)
+  if (timeBefore(now, dizzyUntil))
     return "dizzy";
   if (!s.wifiUp)
     return "sleep";
@@ -387,7 +393,8 @@ void loop() {
   //      nudge wakes us (once per wait, unless DND); else stay dark ----
   if (!screenOn) {
     bool nudgeWake = s.waiting && !autoWakeBlocked() && !waitAcked && waitStart &&
-                     (now - waitStart > 45000) && (lastNudgeWake < waitStart);
+                     (now - waitStart > 45000) &&
+                     timeBefore(lastNudgeWake, waitStart);
     if (touch.rawPressed() || s.running > 0 || nudgeWake) {
       if (nudgeWake)
         lastNudgeWake = now; // fire the screen-wake just once per wait episode
@@ -527,7 +534,7 @@ void loop() {
       tapCount = 0;        // the swipe's touch-down shouldn't count toward dizzy
       lastInteraction = now;
       forceRedraw = true;  // full repaint swaps the card cleanly
-    } else if (abs(dx) < 12 && abs(dy) < 12 && now >= dizzyUntil &&
+    } else if (abs(dx) < 12 && abs(dy) < 12 && !timeBefore(now, dizzyUntil) &&
                pressY >= render::REG_Y &&
                pressY < render::REG_Y + render::REG_H) {
       // petting Clawd: a clean tap on the character answers with a brief heart
@@ -567,7 +574,8 @@ void loop() {
   const char *st = stateName(now);
 
   // ---- auto screen-off when calm; PWM-dim for a few seconds first ----
-  bool calm = s.running == 0 && now >= dizzyUntil && now >= fxUntil;
+  bool calm = s.running == 0 && !timeBefore(now, dizzyUntil) &&
+              !timeBefore(now, fxUntil);
   uint32_t idleFor = now - lastInteraction;
   static bool dimmed = false;
   if (screenOn && calm && idleFor > SCREEN_OFF_MS) {

@@ -266,7 +266,7 @@ void Character::setState(const char *state) {
 void Character::update() {
   if (!loaded_ || !g_open)
     return;
-  if (millis() < g_nextFrame)
+  if ((int32_t)(millis() - g_nextFrame) < 0) // rollover-safe frame deadline
     return;
   int rc = gif.playFrame(false, &g_frameDelay); // composites into the buffer
   if (g_spr)
