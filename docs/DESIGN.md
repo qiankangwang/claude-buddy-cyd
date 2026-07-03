@@ -32,6 +32,12 @@ it fails open to Claude's normal prompt on timeout or an unreachable device.
 - **Light sensor:** onboard photo-transistor on GPIO34 (ADC1; the reading rises
   in the dark) — drives the optional "Brightness: auto" night-dim.
 - **BOOT key (GPIO0):** free after boot; polled as a runtime button.
+- **Power: 5 V** over micro-USB or the `P1` VIN/GND pins. Two supported
+  schemes: **wired** (any USB source), or **battery** — reference setup is a
+  2000 mAh Li-ion behind a charge/discharge boost module feeding the 5 V rail.
+  The cell has no data path to the MCU, so charge is *estimated* in software
+  (`app/battery`, see `battery-gauge-spec.md`): a consumption-model integrator
+  with a manual "charged" reset, a top-bar glyph, and a ≤5% auto power-off.
 
 ## 3. Transport & protocol
 
@@ -66,20 +72,28 @@ All events are non-blocking; device/network errors are swallowed (fail-open).
 
 ## 5. UI & states
 
-- **Top bar:** state dot + label (`ASLEEP` / `READY` / `WORKING` / `DIZZY`) and a
-  link indicator.
+- **Top bar:** state dot + label (`ASLEEP` / `READY` / `WORKING` / `DIZZY`), a
+  battery-estimate glyph (5% buckets; amber <20%, red <10%), intensity pips and
+  a link indicator.
 - **Character region:** the Clawd GIF for the current state. While `busy`, a
   whimsical activity verb rotates in sync with the animation (a multi-clip state
   replays a clip smoothly and switches to the next every few seconds; the switch
   is the rotation signal). Only the headline repaints on rotation, so the stats
   grid never flickers.
 - **Stats card:** a 3×2 grid — today / all-time tokens (`k`/`M`), tool calls,
-  sessions, turns, session duration. A sideways swipe pages the card to the
-  **trends card** (a bar per day, last 14 days, today live in coral; 7-day
-  total + average). The card returns to stats when the screen next sleeps.
+  sessions, turns, session duration. The bottom card has two fixed pages side
+  by side (0 stats left, 1 trends right): swipe left and the **trends card**
+  (a bar per day, last 14 days, today live in coral; 7-day total + average)
+  slides in over ~250 ms; swipe right slides back; the wrong direction
+  rubber-bands. The transition snapshots both pages into 4bpp palette sprites
+  (`screens/card_slide`, ~17 KB each) — the page renderers are canvas- and
+  palette-parameterized (`ui::CardPal`) because 4bpp sprite draw colors are
+  palette indices, not RGB565. The card returns to stats when the screen next
+  sleeps.
 - **Settings** (long-press): Stats panel (full detail), Quiet, Brightness
   (100 / 70 / 40 / auto — auto follows the light sensor, capping the backlight
-  at a night level while the room is dark), touch Recalibrate, and a
+  at a night level while the room is dark), Battery (the gauge estimate; a tap
+  right after a full charge resets it to 100%), touch Recalibrate, and a
   non-destructive WiFi reconfigure. Triple-tap anywhere = `dizzy` easter egg;
   a single tap on the character = a brief `heart` (petting).
 - **BOOT key:** short press wakes the screen / acknowledges the nudge; holding
@@ -90,7 +104,11 @@ All events are non-blocking; device/network errors are swallowed (fail-open).
 - The LED breathes real PWM envelopes for calm states (work blue, gentle
   attention amber, a magenta heartbeat for petting); urgency and errors remain
   crisp hard blinks.
-- 30 s auto screen-off when idle; a touch or new activity wakes it.
+- Auto screen-off: 30 s when calm, 3 min while working (long turns go dark
+  too). Wake-on-work is edge-triggered (idle→working), so a sleeping screen
+  isn't relit by ongoing work — only by a *fresh* turn, a nudge, or a touch.
+  After 1 h with no touch and no hook events the device deep-sleeps itself
+  (tap to wake); the ≤5% battery guard does the same with a force-save.
 
 State selection: `dizzy` (recent triple-tap) → `sleep` (no WiFi/session) →
 `busy` (`running>0`) → `idle`/ready (`total>0`) → `sleep`.
@@ -110,16 +128,23 @@ src/
     led_language.{h,cpp} state -> LED colour/rhythm mapping
     store.{h,cpp}       NVS: auth token + stats snapshot (save/restore)
     history.{h,cpp}     NVS: rolling 30-day per-day token history
-    power.{h,cpp}       deep-sleep "power off" (touch/RST wakes)
+    power.{h,cpp}       deep-sleep "power off" (touch/RST wakes; titled reason)
+    battery.{h,cpp}     software battery gauge: consumption-model integrator,
+                        NVS persistence, RTC-clock deep-sleep accounting
   ui/
     theme.h             RGB565 palette
     text.{h,cpp}        gtext/clamp/sprite-blit text + number formatting
     widgets.{h,cpp}     Rect hit-testing + buttons
   screens/
     layout.{h,cpp}      shared tap-target rects (action bar, settings rows, ack)
-    home.{h,cpp}        status bar, headline, stats card + odometer, budget bar;
-                        owns the bottom card's page (0 stats / 1 trends)
-    trends.{h,cpp}      trends card: 14-day usage bars + 7-day summary
+    home.{h,cpp}        status bar (incl. battery glyph), headline, stats card +
+                        odometer, budget bar; owns the bottom card's page
+                        (0 stats / 1 trends); drawStatsPage renders onto any
+                        canvas/palette for the slide snapshots
+    trends.{h,cpp}      trends card: 14-day usage bars + 7-day summary;
+                        drawTrendsPage mirrors drawStatsPage for snapshots
+    card_slide.{h,cpp}  directional page slide + rubber-band bounce (4bpp
+                        palette snapshots of both pages, ~250 ms ease-out)
     stats_panel.{h,cpp} full live Stats panel
     settings.{h,cpp}    settings menu
     wifi_confirm.{h,cpp} WiFi-portal confirmation
@@ -144,6 +169,10 @@ renderer and request handlers never race and no locking is needed.
   `TFT_eSprite` double-buffer; `AnimatedGIF` decodes one scanline at a time and
   composites into it (nearest-neighbour scaled to the region). On a failed
   sprite allocation the renderer falls back to direct draw.
+- The card-slide transition allocates two transient 4bpp page snapshots
+  (240×140 ≈ 16.8 KB each; 16bpp would blow the largest free block), frees
+  them at the end of the gesture, and degrades to an instant page switch /
+  skipped bounce when either allocation fails.
 - Partition table (`partitions.csv`, 4 MB, dual-OTA): `nvs` (kept at its
   pre-OTA offset so credentials/token/calibration survive the migration),
   `otadata`, `app0`/`app1` (ota_0/ota_1, ~1.31 MB each), `littlefs` (~1.31 MB,

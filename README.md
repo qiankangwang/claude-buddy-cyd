@@ -104,19 +104,22 @@ Dismissing is local — it doesn't reply to Claude.
 **Stats card** (bottom): two headline figures — **Today** and **Total** tokens —
 over four compact counts: **Tools** (tool calls), **Turns** (assistant turns),
 **Sess** (sessions today), **Time** (current session duration). The numbers
-roll like an odometer when they change. **Swipe the card sideways** to page to
-the **Trends card**: a bar per day for the last 14 days (today in coral, still
-growing live) with a 7-day total and daily average — the device keeps a 30-day
-history in flash, dated by the PC so it needs no clock of its own. A fuller,
-live-updating panel is under long-press → **Settings → Stats** (adds project
-name, uptime, free heap, IP).
+roll like an odometer when they change. The card has two pages sitting side by
+side — **swipe left** and the **Trends card** slides in from the right: a bar
+per day for the last 14 days (today in coral, still growing live) with a 7-day
+total and daily average — the device keeps a 30-day history in flash, dated by
+the PC so it needs no clock of its own. **Swipe right** to slide back; swiping
+past the end just rubber-bands. A fuller, live-updating panel is under
+long-press → **Settings → Stats** (adds project name, battery estimate, uptime,
+free heap, IP).
 
 **Ambient cues.** The onboard RGB LED speaks a colour language — a slow blue
 breath while working (cooler/quicker as the session heats up), a gentle amber
 breath when it needs you (escalating to hard blinks the longer it waits), red
 on error, green when a turn lands, and a little magenta heartbeat while you pet
 Clawd — silenced by the **Quiet** (Do Not Disturb) setting, and off whenever
-the screen is asleep. Session intensity shows as 1–2 pips in the top bar.
+the screen is asleep. Session intensity shows as 1–2 pips in the top bar, next
+to a small **battery glyph** (the estimated charge on battery builds).
 Set an optional daily token `"budget"` in `buddy.json` and the stats-card
 divider becomes a usage gauge (coral → amber near the cap → red over).
 
@@ -133,7 +136,34 @@ divider becomes a usage gauge (coral → amber near the cap → red over).
 It's the cheapest all-in-one board with a screen + touch (≈US$10), which is why
 it's the default — but nothing about the app is CYD-specific.
 
-### Adapting to other boards
+### Power: wired or battery
+
+The board wants **5 V**, over its micro-USB port or the `P1` header's VIN/GND
+pins. Two ways to feed it:
+
+- **Wired (simplest).** Any USB power source — a phone charger, a PC port, a
+  power strip with USB. Nothing to configure. The top-bar battery glyph and the
+  Settings **Battery** row assume the battery setup below; on wall power just
+  ignore them.
+- **Battery.** Reference setup: a **2000 mAh Li-ion cell + a cheap
+  charge/discharge boost module** (the "charge + 5 V boost in one board" kind).
+  The cell plugs into the module; the module's 5 V output feeds the CYD (its
+  USB-A output into the CYD's micro-USB cable, or OUT+/OUT− wired to `P1`
+  VIN/GND). No electrical changes to the CYD itself. Notes from the field:
+  - **Charge the module's input port**, not the CYD's USB. Cheap modules'
+    USB-C input usually lacks the CC handshake resistors, so a **USB-C PD
+    charger with a C-to-C cable delivers nothing** (no LED, no charge) — use a
+    USB-A charger / power-bank A-port with an A-to-C (or A-to-micro) cable.
+  - **Charge with the buddy powered off** (Settings → Power off) if you want
+    the module's "full" LED to be truthful — the running device's draw keeps
+    cheap chargers from ever terminating.
+  - The firmware ships a **software battery gauge** for exactly this setup:
+    the device has no data path to the cell, so it estimates charge from its
+    own consumption model (see `docs/battery-gauge-spec.md`). Top-bar glyph
+    (amber &lt;20%, red &lt;10%), a **Battery (est)** row in Settings → Stats,
+    and at ≤5% it saves your stats and puts itself to sleep. After a full
+    charge, **tap Settings → Battery** to tell it the tank is full again —
+    that's the one manual step the estimate needs.
 
 CYD is the target, but the firmware is a thin HAL (`src/hal/`: display, touch,
 led, storage) over `TFT_eSPI`, and everything above it — networking, hooks,
@@ -248,8 +278,9 @@ merged); if two machines push at once, the device shows whichever pushed last.
 
 - **Tap** while asleep — wake the screen.
 - **Tap Clawd** — pet the character: a brief `heart` hello.
-- **Swipe sideways** — page the bottom card between **stats** and **trends**
-  (goes back to stats when the screen next sleeps).
+- **Swipe left / right** — slide the bottom card between **stats** (left page)
+  and **trends** (right page); swiping past the end rubber-bands. Returns to
+  stats when the screen next sleeps.
 - **Tap "Got it"** on the *Needs you* screen — dismiss the nudge: the device
   drops back to idle (LED off) until the next time Claude needs you.
 - **Triple-tap** — `dizzy` easter egg.
@@ -261,12 +292,16 @@ merged); if two machines push at once, the device shows whichever pushed last.
   auto-waking for nudges; only your touch wakes it), **Brightness** (cycle the
   backlight 100 / 70 / 40 % / **auto** — auto night-dims to 25% when the onboard
   light sensor says the room went dark, and eases back up when the lights come
-  on), **Recalibrate** (3-point touch calibration; times out safely
+  on), **Battery** (the gauge estimate — tap it right after a full charge to
+  reset it to 100%), **Recalibrate** (3-point touch calibration; times out safely
   if you walk away), **WiFi setup** (re-open the captive portal — keeps the saved
   password unless you enter a new network), **Power off** (deep sleep — screen,
   LED and WiFi off; tap the screen or press the board's **RST** button to turn it
   back on), **Close**. Quiet and brightness persist across reboots.
-- Auto **screen-off after 30 s** of calm; a touch or new Claude activity wakes it.
+- Auto **screen-off after 30 s** of calm — or **3 min while Claude is working**,
+  so long grinds go dark too; a touch, a fresh turn starting, or a nudge wakes
+  it. After **an hour** with no touch and no Claude activity at all the device
+  deep-sleeps itself (tap to wake).
 
 ## How usage is counted
 
@@ -288,20 +323,29 @@ merged); if two machines push at once, the device shows whichever pushed last.
 
 ## Power use
 
-The main saver is the **30 s auto screen-off**: the backlight (by far the
-largest draw) and the LED switch off when idle, and a touch or new Claude
-activity wakes it instantly — with no change to how the animation looks when it's
-on. While the screen is off the CPU drops from 240 → **80 MHz**, and the idle
-loop throttles to ~25 Hz, to trim idle draw; both jump back on wake. The **WiFi
-radio uses modem-sleep** (it dozes between beacons) to cut idle power too. Because
-power-save can drop the link on some APs, reconnection is aggressive: a ladder in
-the background (`reconnect()` → full supplicant restart) **plus** a fast burst
-fired the moment you wake the screen — so if it dozed off-network it's usually
-back by the time you're looking at it.
+Ordered by how much they save (all automatic):
 
-For a true off, **Settings → Power off** puts the device into deep sleep
-(screen, LED and WiFi all off, ~microamps). It wakes — and cold-boots back into
-the dashboard — on a screen tap or a press of the board's **RST** button.
+- **Auto screen-off.** The backlight is by far the largest draw. 30 s idle when
+  calm; **3 min while Claude is working** (so a marathon turn goes dark instead
+  of burning the backlight for an hour — the LED events and any fresh turn
+  still relight it). While off, the CPU drops 240 → **80 MHz** and the idle
+  loop throttles to ~25 Hz; both jump back on wake.
+- **Auto deep sleep.** After **1 hour** with no touch *and* no hook events the
+  device powers itself fully off — on the battery setup that's ~10 mA
+  (including the boost module's idle draw) instead of ~100 mA idling dark.
+  Tap the screen to wake. WiFi can't wake a deep-sleeping board, which is why
+  the leash is a full hour: any Claude activity inside it still lights the
+  screen the moment work starts.
+- **WiFi modem-sleep.** The radio dozes between beacons. Because power-save can
+  drop the link on some APs, reconnection is aggressive: a ladder in the
+  background (`reconnect()` → full supplicant restart) **plus** a fast burst
+  fired the moment you wake the screen. (Modem-sleep can also make the first
+  OTA invitation go unanswered — just retry the upload.)
+
+For a manual off, **Settings → Power off** deep-sleeps the same way; the
+low-battery guard (≤5% on the gauge) does it automatically after force-saving
+your stats. Either way a screen tap or the **RST** button cold-boots straight
+back into the dashboard.
 
 ## Troubleshooting
 
@@ -317,14 +361,21 @@ the dashboard — on a screen tap or a press of the board's **RST** button.
   lease).
 - **OTA upload rejected ("Authentication failed")** — the `--auth=` value in
   the `cyd-ota` env must be the device token from `buddy.json`.
+- **OTA says "No response from device"** but the device pings fine — WiFi
+  modem-sleep missed the first UDP invitation (common when the screen is off).
+  Just run the upload again; the retry almost always lands.
+- **Charging does nothing (battery setup)** — don't use a USB-C PD charger
+  with a C-to-C cable on a cheap charge module (no CC resistors → no power);
+  use a USB-A source. And charge the module's input, not the CYD's USB.
 
 ## Repository layout
 
 ```
 src/            firmware: main.cpp (orchestrator), app/ (state tables, LED
-                language, NVS store, power), ui/ (theme, text, widgets),
-                screens/ (home, stats, settings, wifi, ask), hal/ (display,
-                touch, led, storage), net/ (server), render/ (Clawd GIF)
+                language, NVS store, power, battery gauge), ui/ (theme, text,
+                widgets), screens/ (home, trends, card slide, stats, settings,
+                wifi, ask), hal/ (display, touch, led, storage), net/ (server),
+                render/ (Clawd GIF)
 data/clawd/     Clawd GIF character pack (flashed as the LittleFS image)
 assets/         README preview GIFs
 tools/          buddy_hook.py + HOOKS.md (the single-file PC helper + setup)
