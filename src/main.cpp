@@ -84,6 +84,7 @@ static bool longFired = false;
 #define SCREEN_OFF_MS 30000UL
 #define BUSY_OFF_MS 180000UL // while Claude works: longer leash, then sleep too
 #define PRESLEEP_MS 8000UL // dim the backlight this long before the full cut-off
+#define AUTO_SLEEP_MS 3600000UL // dark + no events this long -> deep sleep
 
 // ---- enrichment state -------------------------------------------------------
 // "Quiet" (Do Not Disturb): a single on/off Settings toggle. When on, the RGB
@@ -546,6 +547,16 @@ void loop() {
     } else {
       led.off(); // screen is dark -> keep the LED off too (no RGB while asleep)
       wasTouched = false;
+      // auto deep sleep: a long stretch with no touch AND no hook activity
+      // means there is nothing to dashboard -- stop burning ~100 mA on a dark
+      // idle loop and drop to ~10 mA deep sleep (tap to wake). A deep-sleeping
+      // board can't be woken by WiFi, so the leash is long: any Claude event
+      // inside the hour still lights the screen the moment work starts.
+      bool noTouch = now - lastInteraction > AUTO_SLEEP_MS;
+      bool noEvents = lastEventMs == 0 ? now > AUTO_SLEEP_MS
+                                       : now - lastEventMs > AUTO_SLEEP_MS;
+      if (noTouch && noEvents)
+        powerOff(display, touch, led, storage, "Auto sleep"); // does not return
       // idle throttle: ~25 Hz is plenty to catch a tap or an incoming event,
       // and runs the (otherwise idle) loop body 4x less often than before
       delay(40);
