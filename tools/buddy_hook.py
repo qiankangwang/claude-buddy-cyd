@@ -111,59 +111,111 @@ def _project(data):
     return os.path.basename(os.path.normpath(cwd))[:24]
 
 
-def _scan_transcript(path):
-    """One pass over a session log -> {tok, tools, turns}.
+# Dedupe window for the incremental scan: streaming re-logs the same assistant
+# message id in bursts of nearby lines, so a bounded recent-id window catches
+# the duplicates without keeping every id of a huge session in the state file.
+TAIL_MAX = 150
 
-    Two correctness points learned from real transcripts:
+
+def _scan_transcript(path, st=None):
+    """Incremental rollup of a session log -> {tok, tools, turns, off, base,
+    tail}, or None if unreadable.
+
+    `st` is this session's previous result (or None): the scan resumes at its
+    byte offset and only parses appended lines, so hooks stay O(new data) even
+    on a transcript that has grown to tens of MB (a full re-read per event blew
+    past the hook timeout late in long sessions and the device froze). A
+    missing/legacy/invalid `st` -- or a file that shrank (replaced) -- falls
+    back to a full scan. A trailing line without a newline is left unconsumed
+    (Claude Code may still be writing it).
+
+    Totals = `base` (retired ids + id-less lines) + the `tail` window of recent
+    ids. Two correctness points learned from real transcripts:
     * The same assistant message id is re-logged several times (streaming /
-      updates). Counting every line double-counts tokens, turns and tools (~2x),
-      so we dedupe by message id and keep the last occurrence.
+      updates). Counting every line double-counts tokens, turns and tools
+      (~2x), so recent ids dedupe via `tail` (last occurrence wins). An id
+      re-logged more than TAIL_MAX unique ids later would double-count; in
+      practice duplicates arrive in adjacent bursts.
     * tokens = input + output + cache_creation. We deliberately EXCLUDE
       cache_read_input_tokens: that's the cached context re-read on every turn
-      and on a long session it's >95% of the raw total, which balloons the count
-      without reflecting real usage."""
-    seen = {}  # message id -> {tok, tools} (last occurrence wins)
-    extra_tok = extra_tools = extra_turns = 0  # assistant msgs lacking an id
+      and on a long session it's >95% of the raw total, which balloons the
+      count without reflecting real usage."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    o = json.loads(line)
-                except Exception:
-                    continue
-                if o.get("type") != "assistant":
-                    continue
-                msg = o.get("message") or {}
-                if not isinstance(msg, dict):
-                    msg = {}
-                u = msg.get("usage")
-                tok = 0
-                if isinstance(u, dict):
-                    tok = (int(u.get("input_tokens", 0) or 0)
-                           + int(u.get("output_tokens", 0) or 0)
-                           + int(u.get("cache_creation_input_tokens", 0) or 0))
-                tools = 0
-                content = msg.get("content")
-                if isinstance(content, list):
-                    for b in content:
-                        if isinstance(b, dict) and b.get("type") == "tool_use":
-                            tools += 1
-                mid = msg.get("id")
-                if mid:
-                    seen[mid] = {"tok": tok, "tools": tools}
-                else:
-                    extra_tok += tok
-                    extra_tools += tools
-                    extra_turns += 1
-    except Exception:
+        size = os.path.getsize(path)
+    except OSError:
         return None
+    off = 0
+    base = {"tok": 0, "tools": 0, "turns": 0}
+    tail = []  # [id, tok, tools], oldest first
+    if (isinstance(st, dict) and isinstance(st.get("base"), dict)
+            and isinstance(st.get("tail"), list)
+            and isinstance(st.get("off"), int) and 0 <= st["off"] <= size):
+        off = st["off"]
+        base = {k: int(st["base"].get(k, 0) or 0)
+                for k in ("tok", "tools", "turns")}
+        tail = [t for t in st["tail"]
+                if isinstance(t, list) and len(t) == 3 and t[0]]
+    try:
+        with open(path, "rb") as f:
+            f.seek(off)
+            data = f.read()
+    except OSError:
+        return None
+    end = data.rfind(b"\n")
+    if end >= 0:
+        idx = {t[0]: t for t in tail}  # id -> tail entry (shared refs)
+        for raw in data[:end].split(b"\n"):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                o = json.loads(raw)
+            except Exception:
+                continue
+            if not isinstance(o, dict) or o.get("type") != "assistant":
+                continue
+            msg = o.get("message") or {}
+            if not isinstance(msg, dict):
+                msg = {}
+            u = msg.get("usage")
+            tok = 0
+            if isinstance(u, dict):
+                tok = (int(u.get("input_tokens", 0) or 0)
+                       + int(u.get("output_tokens", 0) or 0)
+                       + int(u.get("cache_creation_input_tokens", 0) or 0))
+            tools = 0
+            content = msg.get("content")
+            if isinstance(content, list):
+                for b in content:
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        tools += 1
+            mid = msg.get("id")
+            if mid:
+                e = idx.get(mid)
+                if e:  # streaming update of a recent message: last wins
+                    e[1], e[2] = tok, tools
+                else:
+                    e = [mid, tok, tools]
+                    idx[mid] = e
+                    tail.append(e)
+            else:
+                base["tok"] += tok
+                base["tools"] += tools
+                base["turns"] += 1
+        while len(tail) > TAIL_MAX:  # retire settled ids into the base rollup
+            old = tail.pop(0)
+            idx.pop(old[0], None)
+            base["tok"] += int(old[1] or 0)
+            base["tools"] += int(old[2] or 0)
+            base["turns"] += 1
+        off += end + 1
     return {
-        "tok": sum(r["tok"] for r in seen.values()) + extra_tok,
-        "tools": sum(r["tools"] for r in seen.values()) + extra_tools,
-        "turns": len(seen) + extra_turns,
+        "tok": base["tok"] + sum(int(t[1] or 0) for t in tail),
+        "tools": base["tools"] + sum(int(t[2] or 0) for t in tail),
+        "turns": base["turns"] + len(tail),
+        "off": off,
+        "base": base,
+        "tail": tail,
     }
 
 
@@ -172,9 +224,6 @@ def _today_stats(data):
     midnight) plus an all-time token counter. Returns a dict or None."""
     tp, sid = data.get("transcript_path"), data.get("session_id")
     if not tp or not sid:
-        return None
-    sess = _scan_transcript(tp)
-    if sess is None:
         return None
     today = time.strftime("%Y-%m-%d", time.localtime())
     try:
@@ -204,12 +253,19 @@ def _today_stats(data):
                     new_carry[k] = t
         sessions = {}
         carry = new_carry
+    prior = sessions.get(sid)
+    sess = _scan_transcript(tp, prior if isinstance(prior, dict) else None)
+    if sess is None:
+        return None
     sessions[sid] = sess
     st = {"date": today, "sessions": sessions, "allTokBase": base,
           "carry": carry}
     try:
-        with open(TOK_STATE, "w", encoding="utf-8") as f:
+        # atomic swap: concurrent async hooks may race on this file, and a torn
+        # write would junk every session's scan state at once
+        with open(TOK_STATE + ".tmp", "w", encoding="utf-8") as f:
             json.dump(st, f)
+        os.replace(TOK_STATE + ".tmp", TOK_STATE)
     except Exception:
         pass
 
