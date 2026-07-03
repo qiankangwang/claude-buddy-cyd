@@ -9,6 +9,9 @@ class Led {
 public:
   void begin();
   void set(bool r, bool g, bool b);
+  // Lit channels at pct (0..100) of the configured brightness, gamma-corrected
+  // -- the envelope for smooth breathing/heartbeat patterns.
+  void setLevel(bool r, bool g, bool b, uint8_t pct);
   void off();
   void setBrightness(uint8_t pct); // 0..100% of full-on for lit channels
 

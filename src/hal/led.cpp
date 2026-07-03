@@ -24,8 +24,16 @@ void Led::begin() {
 
 // Active-LOW: the pin sits HIGH when off, so a *lit* channel's PWM spends only
 // `bright_`% of each period LOW -> duty = 255 - bright_%. off() parks at 255.
-void Led::set(bool r, bool g, bool b) {
-  uint8_t on = 255 - (uint16_t)bright_ * 255 / 100;
+void Led::set(bool r, bool g, bool b) { setLevel(r, g, b, 100); }
+
+// pct is a 0..100 envelope within the configured brightness. Squared to
+// approximate the eye's response, so a computed "half" also LOOKS half --
+// linear PWM makes low breathing levels hang bright then drop off a cliff.
+void Led::setLevel(bool r, bool g, bool b, uint8_t pct) {
+  if (pct > 100)
+    pct = 100;
+  uint32_t env = (uint32_t)pct * pct / 100; // 0..100, gamma ~2
+  uint8_t on = 255 - (uint8_t)((uint32_t)bright_ * env * 255 / 10000);
   ledcWrite(CH_R, r ? on : 255);
   ledcWrite(CH_G, g ? on : 255);
   ledcWrite(CH_B, b ? on : 255);

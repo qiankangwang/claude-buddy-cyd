@@ -60,8 +60,17 @@ static bool g_open = false;
 // stays its native size and a large one is shrunk to fit the box below.
 static const int BOX_W = 190, BOX_H = 140; // fill target inside the region
 static int g_sx256 = 256, g_offX = 0, g_offY = 0; // scale ×256 (nearest-neighbour)
+static int g_sxBase = 256; // the settled scale for the open clip (pop-in target)
 static int g_frameDelay = 0;
 static uint32_t g_nextFrame = 0;
+// state-entry pop: the first POP_MS of a NEW state scale the art up from 80%
+// to full (ease-out) -- a springy entrance for heart/celebrate/attention and a
+// touch of life on busy<->idle flips. Frames only ever grow during the pop, so
+// each covers the previous one and nothing needs clearing. Clip switches
+// inside a state (the busy carousel) deliberately don't pop: the working
+// rhythm stays exactly as tuned.
+#define POP_MS 180
+static uint32_t g_popStart = 0;
 
 // ---- AnimatedGIF file callbacks (LittleFS) ----
 static void *gifOpen(const char *fname, int32_t *pSize) {
@@ -150,8 +159,9 @@ bool Character::openCurrent() {
     if (cw <= 0) cw = 120;
     if (ch <= 0) ch = 120;
     int sxx = (BOX_W << 8) / cw, syy = (BOX_H << 8) / ch;
-    g_sx256 = sxx < syy ? sxx : syy; // fill the box, keep aspect (up or down)
-    if (g_sx256 < 16) g_sx256 = 16;
+    g_sxBase = sxx < syy ? sxx : syy; // fill the box, keep aspect (up or down)
+    if (g_sxBase < 16) g_sxBase = 16;
+    g_sx256 = g_sxBase; // update() shrinks this while a state-entry pop plays
     int outW = (cw * g_sx256) >> 8, outH = (ch * g_sx256) >> 8;
     g_offX = REG_X + (REG_W - outW) / 2;
     g_offY = REG_Y + (REG_H - outH) / 2;
@@ -261,6 +271,7 @@ void Character::setState(const char *state) {
   }
   clearArea();
   openCurrentOrFallback();
+  g_popStart = millis(); // springy pop-in on the state's first frames
 }
 
 void Character::update() {
@@ -268,6 +279,25 @@ void Character::update() {
     return;
   if ((int32_t)(millis() - g_nextFrame) < 0) // rollover-safe frame deadline
     return;
+  // state-entry pop: ease the scale 80% -> 100% across the first frames.
+  // Monotonically growing, so every frame covers the one before it.
+  uint32_t el = millis() - g_popStart;
+  int f = 256;
+  if (el < POP_MS) {
+    int p = (int)(el * 256 / POP_MS);
+    int ease = 256 - ((256 - p) * (256 - p)) / 256; // ease-out quad
+    f = 205 + (51 * ease) / 256;                    // 205/256 = 80%
+  }
+  int sx = (g_sxBase * f) >> 8;
+  if (sx < 16)
+    sx = 16;
+  if (sx != g_sx256) {
+    g_sx256 = sx; // re-centre the (temporarily smaller) art
+    int outW = (gif.getCanvasWidth() * g_sx256) >> 8;
+    int outH = (gif.getCanvasHeight() * g_sx256) >> 8;
+    g_offX = REG_X + (REG_W - outW) / 2;
+    g_offY = REG_Y + (REG_H - outH) / 2;
+  }
   int rc = gif.playFrame(false, &g_frameDelay); // composites into the buffer
   if (g_spr)
     g_spr->pushSprite(REG_X, REG_Y); // flicker-free blit of the whole region

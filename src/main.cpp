@@ -794,7 +794,7 @@ void loop() {
   }
 
   static uint32_t ledT = 0;
-  if (now - ledT > 100) {
+  if (now - ledT > 33) { // 30 Hz: smooth breathing envelopes (was 10 Hz)
     ledT = now;
     driveLed(led, st, now, ctx.intensity, waitStart, ledSilenced());
   }
