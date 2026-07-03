@@ -24,7 +24,25 @@ void Display::begin() {
 void Display::backlightLevel(uint8_t pct) {
   if (pct > 100)
     pct = 100;
+  cur_ = tgt_ = pct; // an instant set cancels any glide in flight
   ledcWrite(BL_CH, (uint32_t)pct * 255 / 100);
+}
+
+void Display::glideTo(uint8_t pct) { tgt_ = pct > 100 ? 100 : pct; }
+
+// Ease-out step toward the glide target: a quarter of the remaining distance
+// every 16 ms (~250 ms for a full swing). Smooths the pre-sleep dim and the
+// ambient-light brightness changes instead of visibly snapping.
+void Display::tick(uint32_t now) {
+  if (cur_ == tgt_ || now - lastStep_ < 16)
+    return;
+  lastStep_ = now;
+  int d = (int)tgt_ - (int)cur_;
+  int step = d / 4;
+  if (step == 0)
+    step = d > 0 ? 1 : -1;
+  cur_ = (uint8_t)((int)cur_ + step);
+  ledcWrite(BL_CH, (uint32_t)cur_ * 255 / 100);
 }
 
 void Display::setBrightness(uint8_t pct) {

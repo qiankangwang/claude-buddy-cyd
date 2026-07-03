@@ -46,6 +46,7 @@ static uint32_t lastInteraction = 0;
 // its plausible runtime. 0 = no event seen yet.
 static uint32_t lastEventMs = 0;
 static bool screenOn = true, forceRedraw = false, wasTouched = false, haveChar = false;
+static bool dimmed = false; // pre-sleep backlight fade is in effect
 // triple-tap detection: count taps that arrive in quick succession; any gap
 // longer than TAP_GAP_MS restarts the count, so it's a real fast triple-tap.
 static uint32_t lastTap = 0;
@@ -175,6 +176,8 @@ static void otaSetup() {
   Serial.println("[ota] ready (hostname claude-cyd, auth = device token)");
 }
 
+static int effectiveBright(); // ambient-light section below
+
 static void handleSettingsTap(int x, int y) {
   for (int i = 0; i < 7; i++) {
     if (!inRect(setBtns[i], x, y))
@@ -189,11 +192,22 @@ static void handleSettingsTap(int x, int y) {
       if (ctx.dnd)
         led.off(); // apply the LED silence immediately
       renderSettings();
-    } else if (i == 2) { // cycle backlight brightness 100 -> 70 -> 40 (persisted)
-      ctx.brightPct = ctx.brightPct > 70 ? 70 : (ctx.brightPct > 40 ? 40 : 100);
-      display.setBrightness(ctx.brightPct);
+    } else if (i == 2) { // cycle 100 -> 70 -> 40 -> auto (LDR night-dim)
+      if (ctx.autoDim) {
+        ctx.autoDim = false;
+        ctx.brightPct = 100;
+      } else if (ctx.brightPct > 70) {
+        ctx.brightPct = 70;
+      } else if (ctx.brightPct > 40) {
+        ctx.brightPct = 40;
+      } else {
+        ctx.autoDim = true;
+        ctx.brightPct = 100;
+      }
+      display.setBrightness(effectiveBright());
       display.backlight(true); // apply immediately
       storage.putInt("bright", ctx.brightPct);
+      storage.putInt("adim", ctx.autoDim ? 1 : 0);
       renderSettings();
     } else if (i == 3) { // recalibrate touch (shows visible targets)
       settingsOpen = false;
@@ -211,6 +225,40 @@ static void handleSettingsTap(int x, int y) {
     }
     return;
   }
+}
+
+// ---- ambient light: the CYD's onboard photo-transistor (GPIO34, ADC1). Its
+// pull-up wins in the dark (reading rises toward 4095) and light pulls the pin
+// low. Coarse, but plenty to tell "lights on" from "lights out". When
+// "Brightness: auto" is selected, a dark room caps the backlight at a night
+// level (and softens the LED) so the buddy doesn't glare from the desk;
+// hysteresis + a ~3 s EMA keep a waved hand or a screen flicker from toggling.
+#define LDR_PIN 34
+#define LDR_DARK 3000 // EMA above this = the room went dark
+#define LDR_LIT 2200  // must fall back below this to count as lit again
+#define NIGHT_PCT 25  // backlight cap while dark
+static bool roomDark = false;
+static int effectiveBright() {
+  return (ctx.autoDim && roomDark && ctx.brightPct > NIGHT_PCT) ? NIGHT_PCT
+                                                                : ctx.brightPct;
+}
+static void pollAmbient(uint32_t now) {
+  static uint32_t lastSample = 0;
+  static int ema = -1;
+  if (now - lastSample < 500)
+    return;
+  lastSample = now;
+  int v = analogRead(LDR_PIN);
+  ema = (ema < 0) ? v : ema + (v - ema) / 6; // ~3 s time constant at 2 Hz
+  bool dark = roomDark ? (ema > LDR_LIT) : (ema > LDR_DARK); // hysteresis
+  if (dark == roomDark)
+    return;
+  roomDark = dark;
+  Serial.printf("[ldr] ema=%d -> %s\n", ema, dark ? "dark" : "lit");
+  led.setBrightness(dark && ctx.autoDim ? 5 : 10);
+  display.setBrightness(effectiveBright()); // future wakes use the new level
+  if (screenOn && !dimmed)
+    display.glideTo(effectiveBright()); // and a lit screen eases to it now
 }
 
 // ---- BOOT button (GPIO0): the board's spare physical key. A short press wakes
@@ -282,7 +330,8 @@ void setup() {
   // 3-level "quiet" key (>=1 -> on) for anyone upgrading.
   ctx.dnd = storage.getInt("dnd", storage.getInt("quiet", 0) >= 1 ? 1 : 0) != 0;
   ctx.brightPct = storage.getInt("bright", 100);
-  display.setBrightness(ctx.brightPct);
+  ctx.autoDim = storage.getInt("adim", 0) != 0;
+  display.setBrightness(effectiveBright());
   display.backlight(true);
 
   net::server.setToken(loadOrCreateToken(storage));
@@ -330,6 +379,8 @@ void loop() {
   uint32_t now = millis();
   net::server.loop();
   net::AppState &s = net::server.state();
+  display.tick(now); // step any backlight glide (pre-sleep fade, auto-dim)
+  pollAmbient(now);  // ambient-light night-dim ("Brightness: auto")
 
   // WiFi OTA: arm once the link first comes up, then service it every loop
   // (before the screen-off early-returns below, so a dark device still updates).
@@ -632,7 +683,6 @@ void loop() {
   bool calm = s.running == 0 && !timeBefore(now, dizzyUntil) &&
               !timeBefore(now, fxUntil);
   uint32_t idleFor = now - lastInteraction;
-  static bool dimmed = false;
   if (screenOn && calm && idleFor > SCREEN_OFF_MS) {
     screenOn = false;
     dimmed = false;
@@ -649,10 +699,10 @@ void loop() {
     bool wantDim = calm && idleFor > (SCREEN_OFF_MS - PRESLEEP_MS);
     if (wantDim && !dimmed) {
       dimmed = true;
-      display.backlightLevel(20);
+      display.glideTo(20); // ease down instead of snapping
     } else if (!wantDim && dimmed) {
       dimmed = false;
-      display.backlight(true);
+      display.glideTo(effectiveBright());
     }
   }
   if (!screenOn) {

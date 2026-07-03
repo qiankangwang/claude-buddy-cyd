@@ -14,7 +14,10 @@ void renderSettings() {
             TC_DATUM);
   char quiet[20], bri[20];
   snprintf(quiet, sizeof(quiet), "Quiet: %s", app::ctx.dnd ? "on" : "off");
-  snprintf(bri, sizeof(bri), "Brightness: %d%%", app::ctx.brightPct);
+  if (app::ctx.autoDim)
+    snprintf(bri, sizeof(bri), "Brightness: auto");
+  else
+    snprintf(bri, sizeof(bri), "Brightness: %d%%", app::ctx.brightPct);
   const char *labels[7] = {"Stats", quiet, bri, "Recalibrate",
                            "WiFi setup", "Power off", "Close"};
   for (int i = 0; i < 7; i++)
