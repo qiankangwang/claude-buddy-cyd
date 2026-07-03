@@ -55,11 +55,14 @@ static void drawCell(int cx, int y, const char *v, uint16_t col,
            C_CARD, TC_DATUM, maxW);
 }
 
+// last-drawn text per stat cell: drawStatValues repaints only cells whose text
+// changed; drawStatsPage syncs these on a full paint so the two stay coherent
+static char pT[12], pA[12], pD[14], pNt[8], pNu[8], pNs[8];
+
 // Draw the six value cells from the animated counters (labels are drawn once by
 // renderStatic). force=true redraws all (after a full card repaint); otherwise
 // only cells whose text changed are redrawn, so a settled value never flickers.
 static void drawStatValues(int W, int cy, bool force) {
-  static char pT[12], pA[12], pD[14], pNt[8], pNu[8], pNs[8];
   char tok[12], all[12], dur[14], nt[8], nu[8], ns[8];
   fmtTok(dToday, tok, sizeof(tok));
   fmtTok(dAll, all, sizeof(all));
@@ -114,19 +117,20 @@ void renderBatteryIfChanged() {
 
 // Daily-budget gauge: the card's divider becomes a thin progress bar when a
 // budget is configured (coral -> amber near the cap -> red over). Uses the
-// animated token count (dToday) so it eases with the odometer.
-static void drawBudgetBar(int W, int cy) {
+// animated token count (dToday) so it eases with the odometer. cyAbs is the
+// card's on-screen y; yOrg shifts it into canvas space (0 = the screen).
+static void drawBudgetBar(TFT_eSPI &c, int W, int cyAbs, int yOrg,
+                          const ui::CardPal &p) {
   net::AppState &s = net::server.state();
-  TFT_eSPI &t = tft();
-  int bx = 20, bw = W - 40, by = cy + 38, bh = 4;
-  t.fillRoundRect(bx, by, bw, bh, 2, 0x2945); // track
+  int bx = 20, bw = W - 40, by = cyAbs - yOrg + 38, bh = 4;
+  c.fillRoundRect(bx, by, bw, bh, 2, p.divider); // track
   double frac = s.budget > 0 ? (double)dToday / (double)s.budget : 0;
   if (frac > 1)
     frac = 1;
   int fw = (int)(bw * frac);
-  uint16_t col = frac >= 1.0 ? C_NO : (frac > 0.85 ? 0xFD20 : C_CORAL);
+  uint16_t col = frac >= 1.0 ? p.no : (frac > 0.85 ? p.amber : p.coral);
   if (fw > 0)
-    t.fillRoundRect(bx, by, fw, bh, 2, col);
+    c.fillRoundRect(bx, by, fw, bh, 2, col);
 }
 
 // Card headline text: while busy, the device-rotated whimsy verb (synced to the
@@ -152,6 +156,61 @@ static const char *headlineText(const char *st) {
   if (s.project.length())
     return s.project.c_str();
   return "Claude Buddy";
+}
+
+// The full stats page (card bg, headline, divider/budget, labels, values) onto
+// any canvas. yOrg translates screen-y into canvas space (0 = the screen
+// itself). Direct draws only -- the caller provides a fresh background, so
+// nothing here needs the anti-flicker blit path. live=true also syncs the
+// incremental painters' caches so post-paint rolling updates stay coherent.
+void drawStatsPage(TFT_eSPI &c, int yOrg, const char *st,
+                   const ui::CardPal &p, bool live) {
+  net::AppState &s = net::server.state();
+  int W = tft().width(), H = tft().height();
+  int cyA = REG_Y + REG_H + 4; // absolute card y (layout is screen geometry)
+  int cy = cyA - yOrg;
+  int chh = H - cyA - 6;
+  c.fillRoundRect(8, cy, W - 16, chh, 12, p.card);
+  gtextClampC(c, headlineText(st), W / 2, cy + 18, &FreeSansBold12pt7b, p.text,
+              p.card, MC_DATUM, W - 32);
+  if (s.budget > 0)
+    drawBudgetBar(c, W, cyA, yOrg, p);
+  else
+    c.drawFastHLine(20, cy + 40, W - 40, p.divider);
+  int yA = cy + 54, yB = cy + 96;
+  gtextC(c, "Today", W / 4, yA, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
+  gtextC(c, "Total", W * 3 / 4, yA, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
+  gtextC(c, "Tools", W / 8, yB, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
+  gtextC(c, "Turns", W * 3 / 8, yB, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
+  gtextC(c, "Sess", W * 5 / 8, yB, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
+  gtextC(c, "Time", W * 7 / 8, yB, &FreeSans9pt7b, p.muted, p.card, TC_DATUM);
+  char tok[12], all[12], dur[14], nt[8], nu[8], ns[8];
+  fmtTok(dToday, tok, sizeof(tok));
+  fmtTok(dAll, all, sizeof(all));
+  fmtDur(ctx.sessionStart ? (millis() - ctx.sessionStart) : 0, dur,
+         sizeof(dur));
+  snprintf(nt, sizeof(nt), "%d", dTools);
+  snprintf(nu, sizeof(nu), "%d", dTurns);
+  snprintf(ns, sizeof(ns), "%d", dSess);
+  // same anchors as drawCell: TC_DATUM at y+20 (12pt values) / y+15 (9pt)
+  gtextC(c, tok, W / 4, yA + 20, &FreeSansBold12pt7b, p.coral, p.card, TC_DATUM);
+  gtextC(c, all, W * 3 / 4, yA + 20, &FreeSansBold12pt7b, p.coral, p.card,
+         TC_DATUM);
+  gtextC(c, nt, W / 8, yB + 15, &FreeSansBold9pt7b, p.text, p.card, TC_DATUM);
+  gtextC(c, nu, W * 3 / 8, yB + 15, &FreeSansBold9pt7b, p.text, p.card,
+         TC_DATUM);
+  gtextC(c, ns, W * 5 / 8, yB + 15, &FreeSansBold9pt7b, p.text, p.card,
+         TC_DATUM);
+  gtextC(c, dur, W * 7 / 8, yB + 15, &FreeSansBold9pt7b, p.text, p.card,
+         TC_DATUM);
+  if (live) {
+    strcpy(pT, tok);
+    strcpy(pA, all);
+    strcpy(pD, dur);
+    strcpy(pNt, nt);
+    strcpy(pNu, nu);
+    strcpy(pNs, ns);
+  }
 }
 
 void renderHeadline(const char *st) {
@@ -188,8 +247,7 @@ void renderStatic(const char *st) {
   renderIntensity(); // session-intensity pips
   renderBattery();   // battery gauge glyph
 
-  // bottom stats card (just below the character region; cy = REG_Y+REG_H+4)
-  int cy = REG_Y + REG_H + 4;
+  // bottom stats card (just below the character region)
   t.fillRect(0, REG_Y + REG_H, W, H - (REG_Y + REG_H), TFT_BLACK);
   // On the needs-you screen, drop the stats card -> a clean alert: just the amber
   // Clawd and a "Got it" button to dismiss. Drawn ONCE here (the lower area is
@@ -205,28 +263,7 @@ void renderStatic(const char *st) {
     renderTrends(true);
     return;
   }
-  int chh = H - cy - 6;
-  t.fillRoundRect(8, cy, W - 16, chh, 12, C_CARD);
-
-  // headline (verb when busy, else activity/project) -- shared with renderHeadline
-  gtextClamp(headlineText(st), W / 2, cy + 18, &FreeSansBold12pt7b, C_TEXT,
-             C_CARD, MC_DATUM, W - 32);
-  if (s.budget > 0)
-    drawBudgetBar(W, cy); // divider doubles as the daily-budget gauge
-  else
-    t.drawFastHLine(20, cy + 40, W - 40, 0x2945); // plain divider
-
-  // Two prominent token figures up top (each owns half the card), then a row of
-  // four compact activity counts. Labels are drawn here once; the values below
-  // are animated counters (drawStatValues) that roll toward new totals.
-  int yA = cy + 54, yB = cy + 96;
-  gtext("Today", W / 4, yA, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
-  gtext("Total", W * 3 / 4, yA, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
-  gtext("Tools", W / 8, yB, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
-  gtext("Turns", W * 3 / 8, yB, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
-  gtext("Sess", W * 5 / 8, yB, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
-  gtext("Time", W * 7 / 8, yB, &FreeSans9pt7b, C_MUTED, C_CARD, TC_DATUM);
-  drawStatValues(W, cy, true);
+  drawStatsPage(t, 0, st, ui::PAL_RGB, true);
 }
 
 void seedStats() {
@@ -265,8 +302,8 @@ void rollStats(uint32_t now, const char *st) {
   if (ch) {
     int W = tft().width();
     drawStatValues(W, REG_Y + REG_H + 4, false);
-    if (s.budget > 0)
-      drawBudgetBar(W, REG_Y + REG_H + 4); // ease the gauge with the counter
+    if (s.budget > 0) // ease the gauge with the counter
+      drawBudgetBar(tft(), W, REG_Y + REG_H + 4, 0, ui::PAL_RGB);
   }
 }
 

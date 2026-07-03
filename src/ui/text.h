@@ -19,6 +19,14 @@ int textW(const char *s, const GFXfont *f);
 void gtextClamp(const char *s, int x, int y, const GFXfont *f, uint16_t fg,
                 uint16_t bg, uint8_t datum, int maxW);
 
+// Canvas-explicit variants of gtext/gtextClamp: draw on `c` (the screen or an
+// off-screen sprite -- TFT_eSprite inherits TFT_eSPI so both fit). Text width
+// for clamping is still measured on the real display's font engine.
+void gtextC(TFT_eSPI &c, const char *s, int x, int y, const GFXfont *f,
+            uint16_t fg, uint16_t bg, uint8_t datum);
+void gtextClampC(TFT_eSPI &c, const char *s, int x, int y, const GFXfont *f,
+                 uint16_t fg, uint16_t bg, uint8_t datum, int maxW);
+
 // Flicker-free text update. The CYD has no double buffer, so the usual on-screen
 // fillRect(bg)+drawString briefly shows the cleared cell between erase and redraw
 // -- that blank frame is the "一闪一闪" flicker. Here we render the cell into an

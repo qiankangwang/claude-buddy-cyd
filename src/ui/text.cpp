@@ -8,13 +8,17 @@ void begin(hal::Display &disp) { g_disp = &disp; }
 
 TFT_eSPI &tft() { return g_disp->tft(); }
 
+void gtextC(TFT_eSPI &c, const char *s, int x, int y, const GFXfont *f,
+            uint16_t fg, uint16_t bg, uint8_t datum) {
+  c.setFreeFont(f);
+  c.setTextDatum(datum);
+  c.setTextColor(fg, bg);
+  c.drawString(s, x, y);
+}
+
 void gtext(const char *s, int x, int y, const GFXfont *f, uint16_t fg,
            uint16_t bg, uint8_t datum) {
-  TFT_eSPI &t = tft();
-  t.setFreeFont(f);
-  t.setTextDatum(datum);
-  t.setTextColor(fg, bg);
-  t.drawString(s, x, y);
+  gtextC(tft(), s, x, y, f, fg, bg, datum);
 }
 
 int textW(const char *s, const GFXfont *f) {
@@ -22,17 +26,21 @@ int textW(const char *s, const GFXfont *f) {
   return tft().textWidth(s);
 }
 
-void gtextClamp(const char *s, int x, int y, const GFXfont *f, uint16_t fg,
-                uint16_t bg, uint8_t datum, int maxW) {
+void gtextClampC(TFT_eSPI &c, const char *s, int x, int y, const GFXfont *f,
+                 uint16_t fg, uint16_t bg, uint8_t datum, int maxW) {
   if (textW(s, f) <= maxW) {
-    gtext(s, x, y, f, fg, bg, datum);
+    gtextC(c, s, x, y, f, fg, bg, datum);
     return;
   }
   String str(s);
-  while (str.length() > 1 &&
-         textW((str + "...").c_str(), f) > maxW)
+  while (str.length() > 1 && textW((str + "...").c_str(), f) > maxW)
     str.remove(str.length() - 1);
-  gtext((str + "...").c_str(), x, y, f, fg, bg, datum);
+  gtextC(c, (str + "...").c_str(), x, y, f, fg, bg, datum);
+}
+
+void gtextClamp(const char *s, int x, int y, const GFXfont *f, uint16_t fg,
+                uint16_t bg, uint8_t datum, int maxW) {
+  gtextClampC(tft(), s, x, y, f, fg, bg, datum, maxW);
 }
 
 void blitText(int rx, int ry, int w, int h, const char *s, int tx, int ty,

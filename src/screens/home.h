@@ -1,5 +1,7 @@
 #pragma once
 #include <Arduino.h>
+#include <TFT_eSPI.h>
+#include "ui/theme.h"
 
 namespace screens {
 
@@ -15,6 +17,12 @@ void setCard(int c); // switch page; the caller triggers the repaint
 // Full repaint of the home chrome (top bar + stats card / needs-you ack pill).
 // A full repaint flashes, so callers reserve it for real layout changes.
 void renderStatic(const char *st);
+
+// Draw the full stats page onto any canvas (yOrg translates screen-y into
+// canvas space; live=true syncs the incremental repaint caches). Used by the
+// full home repaint and by the card-slide snapshots (ui::PAL_IDX + 4bpp).
+void drawStatsPage(TFT_eSPI &c, int yOrg, const char *st,
+                   const ui::CardPal &p, bool live);
 
 // Update ONLY the top-bar status dot + label in place (no flash).
 void renderStatusBar(const char *st);
