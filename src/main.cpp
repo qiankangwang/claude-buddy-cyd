@@ -213,6 +213,58 @@ static void handleSettingsTap(int x, int y) {
   }
 }
 
+// ---- BOOT button (GPIO0): the board's spare physical key. A short press wakes
+// the screen or acknowledges a "your turn" nudge (same as tapping "Got it");
+// holding it toggles Quiet with a one-blink LED cue (red = quiet on, green =
+// back to normal). Handy when tapping the resistive panel is inconvenient.
+#define BTN_PIN 0
+#define BTN_DEBOUNCE_MS 30
+static void pollBootButton(uint32_t now) {
+  static bool raw = false, held = false, fired = false;
+  static uint32_t edgeAt = 0, downAt = 0;
+  bool r = digitalRead(BTN_PIN) == LOW;
+  if (r != raw) {
+    raw = r;
+    edgeAt = now;
+  }
+  if (now - edgeAt < BTN_DEBOUNCE_MS)
+    return; // still bouncing
+  if (raw == held) {
+    // stable, unchanged; a hold past the long-press point toggles Quiet once
+    if (held && !fired && now - downAt >= LONG_PRESS_MS) {
+      fired = true;
+      ctx.dnd = !ctx.dnd;
+      storage.putInt("dnd", ctx.dnd ? 1 : 0);
+      led.set(ctx.dnd, !ctx.dnd, false); // cue: red = quiet on, green = off
+      delay(120);
+      led.off(); // the next driveLed tick repaints the proper state
+      if (settingsOpen)
+        renderSettings(); // refresh the Quiet row if it's on screen
+      lastInteraction = now;
+    }
+    return;
+  }
+  held = raw;
+  if (held) {
+    downAt = now;
+    fired = false;
+    return;
+  }
+  if (fired)
+    return; // this release ends the long-press; no short action too
+  lastInteraction = now;
+  if (!screenOn) { // short press: wake ...
+    screenOn = true;
+    setCpuFrequencyMhz(240);
+    net::server.nudgeReconnect();
+    display.backlight(true);
+    forceRedraw = true;
+  } else if (net::server.state().waiting && !waitAcked) { // ... or "Got it"
+    waitAcked = true;
+    forceRedraw = true;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(200);
@@ -223,6 +275,7 @@ void setup() {
   storage.begin();
   touch.begin(display, storage);
   led.begin();
+  pinMode(BTN_PIN, INPUT_PULLUP); // BOOT key doubles as a runtime button
   computeButtons(display.tft());
 
   // restore persisted prefs (Quiet/DND + backlight brightness); migrate the old
@@ -370,6 +423,8 @@ void loop() {
   else if (s.total == 0)
     ctx.sessionStart = 0;
   prevTotal = s.total;
+
+  pollBootButton(now); // physical key: works with the screen on or off
 
   // While asleep, skip the full (filtered) touch read -- the wake check below
   // uses the lighter rawPressed(), so this drops a second SPI touch transaction
