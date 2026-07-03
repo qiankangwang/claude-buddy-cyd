@@ -47,6 +47,22 @@ restores across deep sleep) into `RTC_DATA_ATTR` memory before
 stamp is valid, charge the elapsed time at the deep-sleep rate. RTC RC drift
 (~5 %) is irrelevant at this accuracy.
 
+### Auto-calibration (added 2026-07)
+
+Charging stays invisible (no signal path), but a genuine flat battery IS a
+ground-truth event: the boost output sags and the ESP32 dies by **brownout**.
+On the next boot, `esp_reset_reason() == ESP_RST_BROWNOUT` with a substantially
+discharged gauge (> 40% of usable counted) means "the cell was actually empty
+when we died" — so the counted mAh at that moment is the cell's real usable
+capacity at the modeled rates. It is blended into a learned capacity
+(50/50 EMA, NVS key `bcap`, sanity floor 200 mAh) and the gauge reads 0% until
+the next manual "Charged". The counter may overrun the learned capacity (up to
+2x, percent clamps at 0): if the model is pessimistic, a user who keeps waking
+the device past the low-battery shutdown until it truly dies gives the learner
+an above-capacity sample, which *raises* the estimate — so calibration works
+in both directions. A wall-power brownout glitch can't poison the estimate
+below the 40% discharge guard.
+
 ### Persistence
 
 - NVS key `batt_used` (mAh × 10, uint32). Saved by piggybacking the existing

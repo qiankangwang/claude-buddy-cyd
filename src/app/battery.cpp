@@ -1,4 +1,5 @@
 #include "battery.h"
+#include <esp_system.h>
 #include <sys/time.h>
 
 namespace app {
@@ -17,6 +18,7 @@ static const float USABLE_MAH = CAPACITY_MAH * USABLE_FRACTION;
 static hal::Storage *g_store = nullptr;
 static float g_used = 0;      // mAh consumed since the last "charged" mark
 static float g_savedUsed = 0; // last value mirrored to NVS
+static float g_usable = USABLE_MAH; // learned real capacity (see begin())
 static uint32_t g_lastTick = 0;
 
 // Deep-sleep gap: gettimeofday() is restored from the RTC clock across deep
@@ -40,6 +42,8 @@ static float drawMa(bool screenOn, int brightPct) {
 
 void begin(hal::Storage &storage) {
   g_store = &storage;
+  int cap = storage.getInt("bcap", 0); // learned capacity, mAh x 10
+  g_usable = cap > 0 ? cap / 10.0f : USABLE_MAH;
   g_used = storage.getInt("bused", 0) / 10.0f; // stored as mAh x 10
   g_savedUsed = g_used;
   if (g_sleepMagic == SLEEP_MAGIC && nowSec() >= g_sleepAtSec) {
@@ -48,9 +52,27 @@ void begin(hal::Storage &storage) {
       g_used += MA_SLEEP * slept / 3600.0f;
   }
   g_sleepMagic = 0;
-  if (g_used > USABLE_MAH)
-    g_used = USABLE_MAH;
-  Serial.printf("[batt] restored used=%.1f mAh (%d%%)\n", g_used, percent());
+  // Auto-calibration from a real death: when the cell actually runs dry the
+  // boost output sags and the ESP32 dies by BROWNOUT -- at that instant the
+  // true charge was 0, so the mAh the gauge had counted IS this cell's real
+  // usable capacity at the modeled rates. Blend it in (50/50 EMA) so every
+  // genuine flat-battery event tunes the model. Guard: only learn from a
+  // substantially discharged gauge, so a wall-power glitch or a fresh-cell
+  // hiccup can't shrink the capacity estimate.
+  if (esp_reset_reason() == ESP_RST_BROWNOUT && g_used > 0.4f * g_usable) {
+    g_usable = g_usable * 0.5f + g_used * 0.5f;
+    if (g_usable < 200.0f)
+      g_usable = 200.0f; // sanity floor
+    storage.putInt("bcap", (int)(g_usable * 10));
+    g_used = g_usable; // it died empty: read 0% until the next "Charged"
+    saveIfChanged(true);
+    Serial.printf("[batt] brownout death -> learned usable=%.0f mAh\n",
+                  g_usable);
+  }
+  if (g_used > 2.0f * g_usable) // loose cap: overrun is calibration signal
+    g_used = 2.0f * g_usable;
+  Serial.printf("[batt] restored used=%.1f mAh of %.0f (%d%%)\n", g_used,
+                g_usable, percent());
 }
 
 void tick(uint32_t now, bool screenOn, int brightPct) {
@@ -63,18 +85,21 @@ void tick(uint32_t now, bool screenOn, int brightPct) {
   uint32_t dt = now - g_lastTick;
   g_lastTick = now;
   g_used += drawMa(screenOn, brightPct) * dt / 3600000.0f;
-  if (g_used > USABLE_MAH)
-    g_used = USABLE_MAH;
+  // deliberately allowed to overrun g_usable (up to 2x): if the model was
+  // pessimistic the overrun is exactly what brownout learning needs to see
+  if (g_used > 2.0f * g_usable)
+    g_used = 2.0f * g_usable;
   saveIfChanged(false);
 }
 
 int percent() {
-  int p = (int)(100.0f * (1.0f - g_used / USABLE_MAH) + 0.5f);
+  int p = (int)(100.0f * (1.0f - g_used / g_usable) + 0.5f);
   return p < 0 ? 0 : (p > 100 ? 100 : p);
 }
 
 float hoursLeft(bool screenOn, int brightPct) {
-  return (USABLE_MAH - g_used) / drawMa(screenOn, brightPct);
+  float left = (g_usable - g_used) / drawMa(screenOn, brightPct);
+  return left > 0 ? left : 0;
 }
 
 void resetFull() {
