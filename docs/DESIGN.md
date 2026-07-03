@@ -23,8 +23,11 @@ it fails open to Claude's normal prompt on timeout or an unreachable device.
   **ILI9341, not ST7789** — ST7789 produced a pure-white screen; ILI9341 with the
   default RGB order / no inversion renders correctly.
 - **Touch: XPT2046 on VSPI** (separate bus) — CLK25 / CS33 / MOSI32 / MISO39 /
-  IRQ36. Resistive; a fixed factory calibration ships in firmware, overridable
-  via Settings → Recalibrate (persisted to NVS).
+  IRQ36 (PENIRQ, used only as the deep-sleep wake pin). Resistive; the chip is
+  driven directly (no touch library) with press/hold pressure hysteresis and
+  median-of-5 sampling, tuned so light fingertip taps register. A fixed factory
+  calibration ships in firmware, overridable via Settings → Recalibrate
+  (persisted to NVS).
 - **RGB LED:** R4 / G16 / B17, active-LOW. USB-serial: CH340.
 
 ## 3. Transport & protocol
@@ -108,7 +111,7 @@ src/
     ask.{h,cpp}         opt-in "Allow this tool?" prompt
   hal/
     display.{h,cpp}     TFT_eSPI (ILI9341, HSPI) wrapper + backlight
-    touch.{h,cpp}       XPT2046 (VSPI) read + fixed/NVS calibration mapping
+    touch.{h,cpp}       direct XPT2046 (VSPI) driver + fixed/NVS calibration
     led.{h,cpp}         RGB status LED (active-LOW)
     storage.{h,cpp}     NVS (Preferences) wrapper: token, touch calibration
   net/

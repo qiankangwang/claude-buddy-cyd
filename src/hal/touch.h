@@ -29,6 +29,10 @@ private:
   TouchCal cal_{};
   bool calibrated_ = false;
   int w_ = 240, h_ = 320;
+  // press/hold hysteresis: an open contact stays open at a lower pressure
+  // floor, riding out mid-press dips; last good coords bridge noisy samples
+  bool down_ = false;
+  int16_t lastRX_ = 0, lastRY_ = 0;
 };
 
 } // namespace hal
