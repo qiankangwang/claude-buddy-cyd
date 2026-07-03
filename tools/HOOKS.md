@@ -64,7 +64,10 @@ hook out entirely to keep the device purely a dashboard.
 
 Per event the helper pushes the current activity (a rotating whimsical verb
 while busy) plus today's usage rollup read from the session transcript: tokens
-(today + all-time), tool calls, assistant turns, and session count. Today's
+(today + all-time), tool calls, assistant turns, and session count. The
+transcript is scanned **incrementally** (per-session byte offset persisted in
+`buddy_tokens.json`), so events stay fast even on a session whose transcript
+has grown to tens of MB. Today's
 counts persist in `~/.claude/buddy_tokens.json` and reset at local midnight.
 It also stamps each event with the PC-local **date**, which the device uses to
 key its on-device 30-day usage history (the trends card) — the device itself

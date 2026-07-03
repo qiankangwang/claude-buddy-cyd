@@ -111,11 +111,12 @@ history in flash, dated by the PC so it needs no clock of its own. A fuller,
 live-updating panel is under long-press → **Settings → Stats** (adds project
 name, uptime, free heap, IP).
 
-**Ambient cues.** The onboard RGB LED speaks a colour language — blue while
-working (cooler/quicker as the session heats up), amber when it needs you
-(escalating the longer it waits), red on error, green when a turn lands —
-silenced by the **Quiet** (Do Not Disturb) setting, and off whenever the screen
-is asleep. Session intensity shows as 1–2 pips in the top bar.
+**Ambient cues.** The onboard RGB LED speaks a colour language — a slow blue
+breath while working (cooler/quicker as the session heats up), a gentle amber
+breath when it needs you (escalating to hard blinks the longer it waits), red
+on error, green when a turn lands, and a little magenta heartbeat while you pet
+Clawd — silenced by the **Quiet** (Do Not Disturb) setting, and off whenever
+the screen is asleep. Session intensity shows as 1–2 pips in the top bar.
 Set an optional daily token `"budget"` in `buddy.json` and the stats-card
 divider becomes a usage gauge (coral → amber near the cap → red over).
 
@@ -126,7 +127,8 @@ divider becomes a usage gauge (coral → amber near the cap → red over).
 - ESP32-WROOM-32, 4 MB flash, no PSRAM.
 - Display: **ILI9341** 240×320 — the dual-USB "CYD2USB" unit is ILI9341, *not*
   ST7789 (feeding it the ST7789 driver gives a white screen).
-- Resistive touch (XPT2046), onboard RGB LED, CH340 USB-serial.
+- Resistive touch (XPT2046), onboard RGB LED, light sensor (GPIO34), the BOOT
+  key doubling as a runtime button, CH340 USB-serial.
 
 It's the cheapest all-in-one board with a screen + touch (≈US$10), which is why
 it's the default — but nothing about the app is CYD-specific.
@@ -251,10 +253,15 @@ merged); if two machines push at once, the device shows whichever pushed last.
 - **Tap "Got it"** on the *Needs you* screen — dismiss the nudge: the device
   drops back to idle (LED off) until the next time Claude needs you.
 - **Triple-tap** — `dizzy` easter egg.
+- **BOOT key** (the physical button next to RST) — short press wakes the screen
+  or taps **Got it** for you; holding it toggles **Quiet** (one red blink = on,
+  green = off). Handy when tapping the resistive panel is inconvenient.
 - **Long-press (~1 s)** — open **Settings**: **Stats** (full live panel),
   **Quiet** (on/off Do Not Disturb — silences the RGB LED and stops the screen
-  auto-waking for nudges; only your touch wakes it), **Brightness** (cycle the backlight
-  100 / 70 / 40 %), **Recalibrate** (3-point touch calibration; times out safely
+  auto-waking for nudges; only your touch wakes it), **Brightness** (cycle the
+  backlight 100 / 70 / 40 % / **auto** — auto night-dims to 25% when the onboard
+  light sensor says the room went dark, and eases back up when the lights come
+  on), **Recalibrate** (3-point touch calibration; times out safely
   if you walk away), **WiFi setup** (re-open the captive portal — keeps the saved
   password unless you enter a new network), **Power off** (deep sleep — screen,
   LED and WiFi off; tap the screen or press the board's **RST** button to turn it
@@ -272,6 +279,9 @@ merged); if two machines push at once, the device shows whichever pushed last.
 - Assistant messages are **de-duplicated by id** (the transcript re-logs a
   message several times as it streams), so tokens / turns / tool-calls aren't
   double-counted.
+- The scan is **incremental**: each event resumes from a per-session byte
+  offset (kept in `buddy_tokens.json`) and parses only what was appended, so
+  hooks stay fast even when a long session's transcript reaches tens of MB.
 - **Today** counts persist in `~/.claude/buddy_tokens.json` and reset at local
   midnight; the previous day rolls into the **all-time** total. A session that
   spans midnight isn't double-counted.

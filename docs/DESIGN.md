@@ -29,6 +29,9 @@ it fails open to Claude's normal prompt on timeout or an unreachable device.
   calibration ships in firmware, overridable via Settings → Recalibrate
   (persisted to NVS).
 - **RGB LED:** R4 / G16 / B17, active-LOW. USB-serial: CH340.
+- **Light sensor:** onboard photo-transistor on GPIO34 (ADC1; the reading rises
+  in the dark) — drives the optional "Brightness: auto" night-dim.
+- **BOOT key (GPIO0):** free after boot; polled as a runtime button.
 
 ## 3. Transport & protocol
 
@@ -50,8 +53,10 @@ it fails open to Claude's normal prompt on timeout or an unreachable device.
 Invoked by Claude Code hooks (see `tools/HOOKS.md`). For each event it:
 
 - derives the project name from the cwd,
-- scans the session transcript once to sum tokens and count tool-use blocks and
-  assistant turns,
+- scans the session transcript **incrementally** (a per-session byte offset in
+  `~/.claude/buddy_tokens.json`; only appended lines are parsed, with a bounded
+  recent-id window preserving the streaming dedupe) to sum tokens and count
+  tool-use blocks and assistant turns,
 - aggregates today's totals across sessions (persisted in
   `~/.claude/buddy_tokens.json`, reset at local midnight) plus an all-time token
   counter, and
@@ -72,9 +77,19 @@ All events are non-blocking; device/network errors are swallowed (fail-open).
   sessions, turns, session duration. A sideways swipe pages the card to the
   **trends card** (a bar per day, last 14 days, today live in coral; 7-day
   total + average). The card returns to stats when the screen next sleeps.
-- **Settings** (long-press): Stats panel (full detail), touch Recalibrate, and a
+- **Settings** (long-press): Stats panel (full detail), Quiet, Brightness
+  (100 / 70 / 40 / auto — auto follows the light sensor, capping the backlight
+  at a night level while the room is dark), touch Recalibrate, and a
   non-destructive WiFi reconfigure. Triple-tap anywhere = `dizzy` easter egg;
   a single tap on the character = a brief `heart` (petting).
+- **BOOT key:** short press wakes the screen / acknowledges the nudge; holding
+  it toggles Quiet (one-blink LED cue).
+- Entering a new state pops the character in (80% → 100% over ~180 ms); clip
+  switches inside a state don't pop, so the tuned busy rhythm is untouched.
+  Gradual backlight changes (pre-sleep fade, auto-dim) ease over ~250 ms.
+- The LED breathes real PWM envelopes for calm states (work blue, gentle
+  attention amber, a magenta heartbeat for petting); urgency and errors remain
+  crisp hard blinks.
 - 30 s auto screen-off when idle; a touch or new activity wakes it.
 
 State selection: `dizzy` (recent triple-tap) → `sleep` (no WiFi/session) →
