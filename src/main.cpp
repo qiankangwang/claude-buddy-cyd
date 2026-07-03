@@ -23,6 +23,7 @@
 #include "screens/wifi_confirm.h"
 #include "screens/ask.h"
 #include "screens/stats_panel.h"
+#include "screens/card_slide.h"
 
 using namespace app;
 using namespace ui;
@@ -665,10 +666,23 @@ void loop() {
     int dx = heldX - pressX, dy = heldY - pressY;
     if (abs(dx) >= SWIPE_MIN_DX && abs(dy) <= SWIPE_MAX_DY &&
         now - pressStart < SWIPE_MAX_MS) {
-      setCard(card() ^ 1); // two pages: either direction toggles
-      tapCount = 0;        // the swipe's touch-down shouldn't count toward dizzy
+      // pages sit side by side (0 stats, 1 trends): a leftward finger travels
+      // to the page on the right; the wrong direction rubber-bands instead of
+      // toggling (docs/card-slide-spec.md). The needs-you screen has no card,
+      // so swipes are ignored there. No forceRedraw afterwards -- the slide's
+      // last frame IS the settled page; a full repaint would only flash.
+      const char *gst = stateName(now);
+      bool cardless =
+          !strcmp(gst, "attention") || !strcmp(gst, "notification");
+      if (!cardless) {
+        int target = card() + (dx < 0 ? 1 : -1);
+        if (target >= 0 && target <= 1)
+          slideCard(target, gst);
+        else
+          bounceCard(dx > 0 ? 1 : -1, gst);
+      }
+      tapCount = 0; // the swipe's touch-down shouldn't count toward dizzy
       lastInteraction = now;
-      forceRedraw = true;  // full repaint swaps the card cleanly
     } else if (abs(dx) < 12 && abs(dy) < 12 && !timeBefore(now, dizzyUntil) &&
                pressY >= render::REG_Y &&
                pressY < render::REG_Y + render::REG_H) {
