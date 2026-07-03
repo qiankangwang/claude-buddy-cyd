@@ -17,9 +17,12 @@ known full charge. This is an *estimate*, not a measurement — the UI copy and
 this spec both treat it as such.
 
 - `used_mAh += I(state) * dt`, ticked every 10 s in the main loop.
-- `percent = 100 * (1 - used / USABLE_MAH)`, clamped to 0..100.
-- "Charged" is a manual event: the user taps a Settings row after charging;
-  there is no way to detect the charger electrically.
+- `percent = 100 * (1 - used / usable)`, clamped to 0..100.
+- Fully automatic, death-anchored cycle (revised 2026-07 after the manual
+  "Charged" Settings row proved too easy to fat-finger): a real flat-battery
+  brownout ends a cycle and calibrates capacity; the next clean boot means
+  the human charged it and refills the tank to 100%. Charging mid-cycle is
+  electrically undetectable and simply reads low until the next full cycle.
 
 ### Current model (constants at top of `src/app/battery.cpp`, all tunable)
 
@@ -55,13 +58,13 @@ On the next boot, `esp_reset_reason() == ESP_RST_BROWNOUT` with a substantially
 discharged gauge (> 40% of usable counted) means "the cell was actually empty
 when we died" — so the counted mAh at that moment is the cell's real usable
 capacity at the modeled rates. It is blended into a learned capacity
-(50/50 EMA, NVS key `bcap`, sanity floor 200 mAh) and the gauge reads 0% until
-the next manual "Charged". The counter may overrun the learned capacity (up to
-2x, percent clamps at 0): if the model is pessimistic, a user who keeps waking
-the device past the low-battery shutdown until it truly dies gives the learner
-an above-capacity sample, which *raises* the estimate — so calibration works
-in both directions. A wall-power brownout glitch can't poison the estimate
-below the 40% discharge guard.
+(50/50 EMA, NVS key `bcap`, sanity floor 200 mAh) and the gauge reads 0%. An
+NVS `bdied` flag marks the cycle end; the next non-brownout boot clears it
+and resets the gauge to full. The counter may overrun the learned capacity
+(up to 2x, percent clamps at 0), so a pessimistic model that runs past "0%"
+to a real death gives the learner an above-capacity sample, which *raises*
+the estimate — calibration works in both directions. A wall-power brownout
+glitch can't poison the estimate below the 40% discharge guard.
 
 ### Persistence
 
@@ -80,14 +83,13 @@ below the 40% discharge guard.
   Colors: `C_MUTED` ≥ 20 %, budget-bar amber < 20 %, `C_NO` red < 10 %.
 - **Stats panel** (Settings → Stats): one line, e.g.
   `Battery ~63% · ≈4.2h left (est)`.
-- **Settings row**: `Battery: Charged ✓` — tap = reset gauge to 100 %
-  (persist immediately). This is the only way to tell the device it charged.
-- **Low-battery shutdown**: at ≤ 5 % force-save stats/history and enter the
-  existing `powerOff()` deep-sleep screen with copy "Battery low — charge me"
-  (protects the stats and stops the boost from flat-draining the cell).
-  **Boot grace period**: the shutdown check is armed only 3 min after boot,
-  so a freshly-charged device that still *reads* ≤ 5 % can be woken and its
-  gauge reset via Settings → Charged instead of shutting down in a loop.
+- **No Settings row** (removed): the gauge is display-only (glyph + Stats
+  panel). The original tappable "Charged" reset was fat-fingered in practice
+  and is superseded by the automatic death-anchored cycle above.
+- **No low-battery shutdown** (removed): the device deliberately runs until
+  the module's protection board cuts power — that brownout IS the calibration
+  and cycle-end signal. At ≤ 3 % estimated, stats/history/gauge force-save
+  every minute so the eventual power cut loses almost nothing.
 
 ## Explicit non-goals / rejected ideas
 
@@ -98,8 +100,8 @@ below the 40% discharge guard.
   NVS corruption, and the periodic save + low-battery shutdown already bound
   data loss to a few minutes of stats.
 - **Charging-while-using compensation** — undetectable; documented behavior
-  is "gauge keeps counting down while plugged in; tap Charged after a full
-  charge."
+  is "gauge keeps counting down while plugged in; it re-syncs on the next
+  die → charge → power-on cycle."
 
 ## Testing
 

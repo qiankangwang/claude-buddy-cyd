@@ -37,7 +37,9 @@ it fails open to Claude's normal prompt on timeout or an unreachable device.
   2000 mAh Li-ion behind a charge/discharge boost module feeding the 5 V rail.
   The cell has no data path to the MCU, so charge is *estimated* in software
   (`app/battery`, see `battery-gauge-spec.md`): a consumption-model integrator
-  with a manual "charged" reset, a top-bar glyph, and a ≤5% auto power-off.
+  with a fully automatic death-anchored cycle — a real flat-battery brownout
+  calibrates the learned capacity and the next clean boot refills to 100%
+  (no manual control; a tappable reset proved too easy to fat-finger).
 
 ## 3. Transport & protocol
 
@@ -92,8 +94,7 @@ All events are non-blocking; device/network errors are swallowed (fail-open).
   sleeps.
 - **Settings** (long-press): Stats panel (full detail), Quiet, Brightness
   (100 / 70 / 40 / auto — auto follows the light sensor, capping the backlight
-  at a night level while the room is dark), Battery (the gauge estimate; a tap
-  right after a full charge resets it to 100%), touch Recalibrate, and a
+  at a night level while the room is dark), touch Recalibrate, and a
   non-destructive WiFi reconfigure. Triple-tap anywhere = `dizzy` easter egg;
   a single tap on the character = a brief `heart` (petting).
 - **BOOT key:** short press wakes the screen / acknowledges the nudge; holding
@@ -108,7 +109,8 @@ All events are non-blocking; device/network errors are swallowed (fail-open).
   too). Wake-on-work is edge-triggered (idle→working), so a sleeping screen
   isn't relit by ongoing work — only by a *fresh* turn, a nudge, or a touch.
   After 1 h with no touch and no hook events the device deep-sleeps itself
-  (tap to wake); the ≤5% battery guard does the same with a force-save.
+  (tap to wake). On battery it runs until the cell's protection cuts power
+  (the brownout calibrates the gauge), checkpointing NVS every minute at ≤3%.
 
 State selection: `dizzy` (recent triple-tap) → `sleep` (no WiFi/session) →
 `busy` (`running>0`) → `idle`/ready (`total>0`) → `sleep`.

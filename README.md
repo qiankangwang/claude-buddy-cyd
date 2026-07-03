@@ -160,10 +160,14 @@ pins. Two ways to feed it:
   - The firmware ships a **software battery gauge** for exactly this setup:
     the device has no data path to the cell, so it estimates charge from its
     own consumption model (see `docs/battery-gauge-spec.md`). Top-bar glyph
-    (amber &lt;20%, red &lt;10%), a **Battery (est)** row in Settings → Stats,
-    and at ≤5% it saves your stats and puts itself to sleep. After a full
-    charge, **tap Settings → Battery** to tell it the tank is full again —
-    that's the one manual step the estimate needs.
+    (amber &lt;20%, red &lt;10%) and a **Battery (est)** row in Settings →
+    Stats. It's **fully automatic and death-anchored**: run the device until
+    the cell actually dies (the module's protection board guards the cell;
+    stats checkpoint every minute near the end), charge it, power it on — the
+    gauge learns the cell's real capacity from each death and refills to 100%
+    on the first boot after one. Mid-cycle top-ups are invisible to it, so
+    the reading runs low until the next full die-charge-boot cycle — it's an
+    estimate, treat it as one.
 
 CYD is the target, but the firmware is a thin HAL (`src/hal/`: display, touch,
 led, storage) over `TFT_eSPI`, and everything above it — networking, hooks,
@@ -292,8 +296,7 @@ merged); if two machines push at once, the device shows whichever pushed last.
   auto-waking for nudges; only your touch wakes it), **Brightness** (cycle the
   backlight 100 / 70 / 40 % / **auto** — auto night-dims to 25% when the onboard
   light sensor says the room went dark, and eases back up when the lights come
-  on), **Battery** (the gauge estimate — tap it right after a full charge to
-  reset it to 100%), **Recalibrate** (3-point touch calibration; times out safely
+  on), **Recalibrate** (3-point touch calibration; times out safely
   if you walk away), **WiFi setup** (re-open the captive portal — keeps the saved
   password unless you enter a new network), **Power off** (deep sleep — screen,
   LED and WiFi off; tap the screen or press the board's **RST** button to turn it
@@ -342,10 +345,11 @@ Ordered by how much they save (all automatic):
   fired the moment you wake the screen. (Modem-sleep can also make the first
   OTA invitation go unanswered — just retry the upload.)
 
-For a manual off, **Settings → Power off** deep-sleeps the same way; the
-low-battery guard (≤5% on the gauge) does it automatically after force-saving
-your stats. Either way a screen tap or the **RST** button cold-boots straight
-back into the dashboard.
+For a manual off, **Settings → Power off** deep-sleeps the same way. On
+battery the device deliberately runs until the cell's protection cuts power —
+that brownout is what calibrates the gauge — checkpointing stats every minute
+once the estimate reads ≤3%. Either way a screen tap or the **RST** button
+cold-boots straight back into the dashboard.
 
 ## Troubleshooting
 
@@ -367,6 +371,9 @@ back into the dashboard.
 - **Charging does nothing (battery setup)** — don't use a USB-C PD charger
   with a C-to-C cable on a cheap charge module (no CC resistors → no power);
   use a USB-A source. And charge the module's input, not the CYD's USB.
+- **Battery reading looks wrong** — normal after mid-cycle top-ups (charging
+  is invisible to the gauge). It re-syncs itself on the next full
+  die → charge → power-on cycle.
 
 ## Repository layout
 

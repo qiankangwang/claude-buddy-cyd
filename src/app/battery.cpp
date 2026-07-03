@@ -64,10 +64,22 @@ void begin(hal::Storage &storage) {
     if (g_usable < 200.0f)
       g_usable = 200.0f; // sanity floor
     storage.putInt("bcap", (int)(g_usable * 10));
-    g_used = g_usable; // it died empty: read 0% until the next "Charged"
+    storage.putInt("bdied", 1); // remember: this cycle ended flat
+    g_used = g_usable;          // it died empty: read 0%
     saveIfChanged(true);
     Serial.printf("[batt] brownout death -> learned usable=%.0f mAh\n",
                   g_usable);
+  } else if (esp_reset_reason() != ESP_RST_BROWNOUT &&
+             storage.getInt("bdied", 0) != 0) {
+    // First clean boot after a flat-battery death: the only way the board is
+    // alive again is that the human charged it -- start a fresh full tank.
+    // (There is deliberately NO manual "charged" control: it was too easy to
+    // fat-finger. Charging mid-cycle stays invisible, so the honest habit is
+    // run-until-it-dies -> charge -> power on.)
+    storage.putInt("bdied", 0);
+    g_used = 0;
+    saveIfChanged(true);
+    Serial.println("[batt] boot after flat death -> assuming freshly charged");
   }
   if (g_used > 2.0f * g_usable) // loose cap: overrun is calibration signal
     g_used = 2.0f * g_usable;
@@ -100,11 +112,6 @@ int percent() {
 float hoursLeft(bool screenOn, int brightPct) {
   float left = (g_usable - g_used) / drawMa(screenOn, brightPct);
   return left > 0 ? left : 0;
-}
-
-void resetFull() {
-  g_used = 0;
-  saveIfChanged(true);
 }
 
 void noteDeepSleep() {

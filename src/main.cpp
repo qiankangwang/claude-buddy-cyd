@@ -183,7 +183,7 @@ static void otaSetup() {
 static int effectiveBright(); // ambient-light section below
 
 static void handleSettingsTap(int x, int y) {
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < 7; i++) {
     if (!inRect(setBtns[i], x, y))
       continue;
     if (i == 0) { // open the stats panel
@@ -213,20 +213,17 @@ static void handleSettingsTap(int x, int y) {
       storage.putInt("bright", ctx.brightPct);
       storage.putInt("adim", ctx.autoDim ? 1 : 0);
       renderSettings();
-    } else if (i == 3) { // battery: the user says it's freshly charged
-      battery::resetFull();
-      renderSettings(); // label re-reads the (now 100%) estimate
-    } else if (i == 4) { // recalibrate touch (shows visible targets)
+    } else if (i == 3) { // recalibrate touch (shows visible targets)
       settingsOpen = false;
       touch.calibrate(display);
       forceRedraw = true;
-    } else if (i == 5) { // WiFi setup -> confirm first (avoids accidental taps)
+    } else if (i == 4) { // WiFi setup -> confirm first (avoids accidental taps)
       settingsOpen = false;
       wifiConfirmOpen = true;
       renderWifiConfirm();
-    } else if (i == 6) { // power off -> deep sleep (tap screen / RST to wake)
+    } else if (i == 5) { // power off -> deep sleep (tap screen / RST to wake)
       powerOff(display, touch, led, storage); // does not return
-    } else { // close (i == 7)
+    } else { // close (i == 6)
       settingsOpen = false;
       forceRedraw = true;
     }
@@ -320,20 +317,22 @@ static void pollBootButton(uint32_t now) {
   }
 }
 
-// ---- software battery gauge: integrate the draw model, repaint the top-bar
-// glyph when its bucket moves, and put the cell to bed before it runs flat.
-// The shutdown check is armed only past a boot grace period so a
-// freshly-charged device whose gauge still *reads* empty can be woken and
-// reset via Settings -> Battery instead of shutting down in a loop.
-#define BATT_SHUTDOWN_PCT 5
-#define BATT_BOOT_GRACE_MS 180000UL
+// ---- software battery gauge: integrate the draw model and repaint the
+// top-bar glyph when its bucket moves. The device deliberately runs until the
+// cell actually dies (the brownout is the gauge's calibration + cycle-end
+// signal; the module's protection board guards the cell) -- so near the end
+// we just checkpoint everything more often to shrink the loss window.
 static void pollBattery(uint32_t now) {
   battery::tick(now, screenOn, effectiveBright());
   if (screenOn && !settingsOpen && !statsOpen && !wifiConfirmOpen && !askOpen)
     renderBatteryIfChanged(); // home/needs-you top bar owns the glyph cell
-  if (now > BATT_BOOT_GRACE_MS && battery::percent() <= BATT_SHUTDOWN_PCT)
-    powerOff(display, touch, led, storage,
-             "Battery low - charge me"); // saves stats; does not return
+  static uint32_t lastLowSave = 0;
+  if (battery::percent() <= 3 && now - lastLowSave > 60000) {
+    lastLowSave = now; // imminent brownout: keep the counters fresh in NVS
+    saveStatsIfChanged(storage, true);
+    historySaveIfChanged(storage, true);
+    battery::saveIfChanged(true);
+  }
 }
 
 void setup() {
