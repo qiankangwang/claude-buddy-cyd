@@ -1,11 +1,9 @@
-# OTA layout for 4MB flash: two app slots + LittleFS for the character pack.
-# NVS keeps its old offset/size, so WiFi creds, the token and the touch
-# calibration survive the migration. LittleFS MOVED (0x1E0000 -> 0x2B0000) and
-# shrank, so the first flash of this layout must be over USB and must re-run
-# uploadfs; after that both firmware and files update over WiFi (env cyd-ota).
+# Factory-only layout for 4MB flash (BLE build: espota + the 2nd app slot are
+# gone -- firmware updates are USB-only now). nvs and littlefs keep their exact
+# offsets so the token, touch + battery calibration, stats ring and GIF pack
+# all survive the migration flash. The old otadata region (0xE000) is a dead
+# gap. 0x10000 + 0x2A0000 = 0x2B0000; 0x2B0000 + 0x150000 = 4MB exactly.
 # Name,     Type, SubType, Offset,   Size
 nvs,        data, nvs,     0x9000,   0x5000
-otadata,    data, ota,     0xE000,   0x2000
-app0,       app,  ota_0,   0x10000,  0x150000
-app1,       app,  ota_1,   0x160000, 0x150000
+app0,       app,  factory, 0x10000,  0x2A0000
 littlefs,   data, spiffs,  0x2B0000, 0x150000
