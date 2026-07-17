@@ -23,9 +23,9 @@ void renderSettings() {
   // Power off sits on top, in red -- it's the row reached for most, and the
   // color keeps it unmistakable (waking back up is a single tap, so a stray
   // hit costs nothing).
-  const char *labels[7] = {"Power off", "Stats", quiet, bri,
-                           "Recalibrate", "WiFi setup", "Close"};
-  for (int i = 0; i < 7; i++)
+  const char *labels[6] = {"Power off", "Stats", quiet, bri,
+                           "Recalibrate", "Close"};
+  for (int i = 0; i < 6; i++)
     ui::drawButton(setBtns[i], labels[i],
                    i == 0 ? C_NO : (i == 2 && app::ctx.dnd) ? 0x7B40 : C_FACE);
 }

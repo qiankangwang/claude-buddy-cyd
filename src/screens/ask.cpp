@@ -1,6 +1,6 @@
 #include "ask.h"
 #include "layout.h"
-#include "net/server.h"
+#include "net/ble.h"
 #include "ui/text.h"
 #include "ui/theme.h"
 
@@ -8,7 +8,7 @@ namespace screens {
 
 void renderAsk() {
   TFT_eSPI &t = ui::tft();
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   int W = t.width();
   t.fillScreen(TFT_BLACK);
   ui::gtext("Allow?", W / 2, 40, &FreeSansBold18pt7b, C_CORAL, TFT_BLACK,

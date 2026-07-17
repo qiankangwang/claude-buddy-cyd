@@ -4,7 +4,7 @@
 #include "app/ctx.h"
 #include "app/activity.h"
 #include "app/battery.h"
-#include "net/server.h"
+#include "net/ble.h"
 #include "render/character.h"
 #include "ui/text.h"
 #include "ui/theme.h"
@@ -121,7 +121,7 @@ void renderBatteryIfChanged() {
 // card's on-screen y; yOrg shifts it into canvas space (0 = the screen).
 static void drawBudgetBar(TFT_eSPI &c, int W, int cyAbs, int yOrg,
                           const ui::CardPal &p) {
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   int bx = 20, bw = W - 40, by = cyAbs - yOrg + 38, bh = 4;
   c.fillRoundRect(bx, by, bw, bh, 2, p.divider); // track
   double frac = s.budget > 0 ? (double)dToday / (double)s.budget : 0;
@@ -136,7 +136,7 @@ static void drawBudgetBar(TFT_eSPI &c, int W, int cyAbs, int yOrg,
 // Card headline text: while busy, the device-rotated whimsy verb (synced to the
 // animation); otherwise the hook activity msg, else project, else name.
 static const char *headlineText(const char *st) {
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   if (!strcmp(st, "busy"))
     return WHIMSY[verbIdx];
   if (isWork(st)) // tool-specific activity -> its own verb
@@ -165,7 +165,7 @@ static const char *headlineText(const char *st) {
 // incremental painters' caches so post-paint rolling updates stay coherent.
 void drawStatsPage(TFT_eSPI &c, int yOrg, const char *st,
                    const ui::CardPal &p, bool live) {
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   int W = tft().width(), H = tft().height();
   int cyA = REG_Y + REG_H + 4; // absolute card y (layout is screen geometry)
   int cy = cyA - yOrg;
@@ -222,28 +222,28 @@ void renderHeadline(const char *st) {
            &FreeSansBold12pt7b, C_TEXT, C_CARD, MC_DATUM, W - 32);
 }
 
-// The label band stops short of the intensity pips / WiFi dot, which update on
+// The label band stops short of the intensity pips / link dot, which update on
 // their own.
 void renderStatusBar(const char *st) {
   TFT_eSPI &t = tft();
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   int W = t.width();
   t.fillCircle(13, 13, 5, stateColor(st));
   blitText(26, 2, (W - 84) - 26, 24, stateLabel(st), 26, 14, &FreeSansBold9pt7b,
            C_TEXT, TFT_BLACK, ML_DATUM, (W - 84) - 26);
-  t.fillCircle(W - 13, 13, 4, s.wifiUp ? 0x2DEA : 0x9000);
+  t.fillCircle(W - 13, 13, 4, s.linkUp ? 0x2DEA : 0x9000);
 }
 
 void renderStatic(const char *st) {
   TFT_eSPI &t = tft();
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   int W = t.width(), H = t.height();
 
   // top status bar
   t.fillRect(0, 0, W, REG_Y, TFT_BLACK);
   t.fillCircle(13, 13, 5, stateColor(st));
   gtext(stateLabel(st), 26, 14, &FreeSansBold9pt7b, C_TEXT, TFT_BLACK, ML_DATUM);
-  t.fillCircle(W - 13, 13, 4, s.wifiUp ? 0x2DEA : 0x9000); // link indicator
+  t.fillCircle(W - 13, 13, 4, s.linkUp ? 0x2DEA : 0x9000); // link indicator
   renderIntensity(); // session-intensity pips
   renderBattery();   // battery gauge glyph
 
@@ -267,7 +267,7 @@ void renderStatic(const char *st) {
 }
 
 void seedStats() {
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   dToday = s.tokens;
   dAll = s.tokensAll;
   dTools = s.tools;
@@ -276,7 +276,7 @@ void seedStats() {
 }
 
 void rollStats(uint32_t now, const char *st) {
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   static uint32_t lastRoll = 0;
   if (now - lastRoll <= 40)
     return;

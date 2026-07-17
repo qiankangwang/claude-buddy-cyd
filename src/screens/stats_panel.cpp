@@ -1,7 +1,7 @@
 #include "stats_panel.h"
 #include "app/ctx.h"
 #include "app/battery.h"
-#include "net/server.h"
+#include "net/ble.h"
 #include "ui/text.h"
 #include "ui/theme.h"
 
@@ -9,7 +9,7 @@ namespace screens {
 
 void renderStats(bool full) {
   TFT_eSPI &t = ui::tft();
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   int W = t.width();
   if (full) {
     t.fillScreen(TFT_BLACK);
@@ -61,7 +61,7 @@ void renderStats(bool full) {
   row("Uptime", String(b));
   snprintf(b, sizeof(b), "%u KB", (unsigned)(ESP.getFreeHeap() / 1024));
   row("Free heap", String(b));
-  row("IP", s.ip);
+  row("Link", s.linkUp ? String("BLE connected") : String("advertising"));
 }
 
 } // namespace screens

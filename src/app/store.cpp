@@ -1,6 +1,6 @@
 #include "store.h"
 #include <esp_random.h>
-#include "net/server.h"
+#include "net/ble.h"
 
 namespace app {
 
@@ -30,7 +30,7 @@ struct StatsBlob {
 };
 
 static void fillStatsBlob(StatsBlob &b) {
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   memset(&b, 0, sizeof(b)); // zero padding too, so memcmp is stable
   b.magic = STATS_MAGIC;
   b.tokensAll = s.tokensAll;
@@ -49,7 +49,7 @@ void restoreStats(hal::Storage &storage) {
     Serial.println("[stats] no saved snapshot (first boot or version bump)");
     return; // no valid blob (first boot, or a version bump invalidated it)
   }
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   s.tokensAll = b.tokensAll;
   s.tokens = b.tokens;
   s.budget = b.budget;

@@ -1,12 +1,11 @@
 #include <Arduino.h>
-#include <ArduinoOTA.h>
 #include <LittleFS.h>
 #include "hal/display.h" // pulls in TFT_eSPI (GFX free fonts come with LOAD_GFXFF)
 #include "hal/storage.h"
 #include "hal/touch.h"
 #include "hal/led.h"
 #include "render/character.h"
-#include "net/server.h"
+#include "net/ble.h"
 #include "app/ctx.h"
 #include "app/activity.h"
 #include "app/led_language.h"
@@ -20,7 +19,6 @@
 #include "screens/layout.h"
 #include "screens/home.h"
 #include "screens/settings.h"
-#include "screens/wifi_confirm.h"
 #include "screens/ask.h"
 #include "screens/stats_panel.h"
 #include "screens/card_slide.h"
@@ -72,10 +70,9 @@ static bool pressOnHome = false;
 // clip-switch sync signal: the busy verb rotates when the animation switches
 static uint32_t lastLoops = 0;
 
-// settings / stats / wifi-confirm screens (long-press to open settings)
+// settings / stats screens (long-press to open settings)
 static bool settingsOpen = false;
 static bool statsOpen = false;
-static bool wifiConfirmOpen = false;
 static bool askOpen = false;       // on-device "Allow this tool?" prompt
 static uint32_t askShownAt = 0;    // for the auto-dismiss timeout
 static uint32_t pressStart = 0;
@@ -110,12 +107,12 @@ static inline bool timeBefore(uint32_t a, uint32_t b) {
   return (int32_t)(a - b) < 0;
 }
 static const char *stateName(uint32_t now) {
-  net::AppState &s = net::server.state();
+  net::AppState &s = net::ble.state();
   if (timeBefore(now, fxUntil))
     return fxState.c_str(); // transient hook effect (attention/celebrate/heart)
   if (timeBefore(now, dizzyUntil))
     return "dizzy";
-  if (!s.wifiUp)
+  if (!s.linkUp) // no bridge attached = Claude isn't in use -> the buddy naps
     return "sleep";
   if (s.running > 0)
     return s.act.length() ? s.act.c_str() : "busy"; // tool-specific clip, else carousel
@@ -126,64 +123,10 @@ static const char *stateName(uint32_t now) {
   return "sleep";
 }
 
-// ---- WiFi OTA (`pio run -e cyd-ota -t upload` / `-t uploadfs`) --------------
-// Password = the device token (the same secret the hooks send). The transfer
-// runs inside ArduinoOTA.handle(), so the loop is parked: draw the progress
-// screen up front and just repaint the bar as chunks land.
-static void otaSetup() {
-  ArduinoOTA.setHostname("claude-cyd");
-  ArduinoOTA.setPassword(net::server.state().token.c_str());
-  ArduinoOTA.setMdnsEnabled(false); // net::server already owns the mDNS name
-  ArduinoOTA.onStart([]() {
-    settingsOpen = statsOpen = wifiConfirmOpen = askOpen = false;
-    screenOn = true;
-    setCpuFrequencyMhz(240);
-    display.backlight(true);
-    bool fs = ArduinoOTA.getCommand() == U_SPIFFS;
-    if (fs)
-      LittleFS.end(); // the pack partition is about to be rewritten raw
-    TFT_eSPI &t = display.tft();
-    t.fillScreen(TFT_BLACK);
-    gtext(fs ? "Updating files..." : "Updating firmware...", t.width() / 2, 130,
-          &FreeSansBold12pt7b, C_CORAL, TFT_BLACK, MC_DATUM);
-    t.drawRoundRect(30, 160, t.width() - 60, 18, 6, 0x4A69);
-  });
-  ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
-    static int lastPct = -1;
-    int pct = total ? (int)((uint64_t)done * 100 / total) : 0;
-    if (pct == lastPct)
-      return;
-    lastPct = pct;
-    TFT_eSPI &t = display.tft();
-    t.fillRoundRect(32, 162, (t.width() - 64) * pct / 100, 14, 4, C_CORAL);
-    char b[8];
-    snprintf(b, sizeof(b), "%d%%", pct);
-    blitText(0, 190, t.width(), 22, b, t.width() / 2, 200, &FreeSansBold9pt7b,
-             C_TEXT, TFT_BLACK, MC_DATUM, 80);
-  });
-  ArduinoOTA.onEnd([]() {
-    gtext("Rebooting...", display.tft().width() / 2, 236, &FreeSans9pt7b,
-          C_MUTED, TFT_BLACK, MC_DATUM);
-  });
-  ArduinoOTA.onError([](ota_error_t e) {
-    // A half-applied update (or an unmounted pack FS) isn't a state worth
-    // limping on in -- persist the counters and reboot back to the old app.
-    Serial.printf("[ota] error %d\n", (int)e);
-    gtext("Update failed", display.tft().width() / 2, 236, &FreeSans9pt7b,
-          C_NO, TFT_BLACK, MC_DATUM);
-    saveStatsIfChanged(storage, true);
-    historySaveIfChanged(storage, true);
-    delay(1200);
-    ESP.restart();
-  });
-  ArduinoOTA.begin();
-  Serial.println("[ota] ready (hostname claude-cyd, auth = device token)");
-}
-
 static int effectiveBright(); // ambient-light section below
 
 static void handleSettingsTap(int x, int y) {
-  for (int i = 0; i < 7; i++) {
+  for (int i = 0; i < 6; i++) {
     if (!inRect(setBtns[i], x, y))
       continue;
     if (i == 0) { // power off -> deep sleep (tap screen / RST to wake)
@@ -219,11 +162,7 @@ static void handleSettingsTap(int x, int y) {
       settingsOpen = false;
       touch.calibrate(display);
       forceRedraw = true;
-    } else if (i == 5) { // WiFi setup -> confirm first (avoids accidental taps)
-      settingsOpen = false;
-      wifiConfirmOpen = true;
-      renderWifiConfirm();
-    } else { // close (i == 6)
+    } else { // close (i == 5)
       settingsOpen = false;
       forceRedraw = true;
     }
@@ -308,10 +247,9 @@ static void pollBootButton(uint32_t now) {
   if (!screenOn) { // short press: wake ...
     screenOn = true;
     setCpuFrequencyMhz(240);
-    net::server.nudgeReconnect();
     display.backlight(true);
     forceRedraw = true;
-  } else if (net::server.state().waiting && !waitAcked) { // ... or "Got it"
+  } else if (net::ble.state().waiting && !waitAcked) { // ... or "Got it"
     waitAcked = true;
     forceRedraw = true;
   }
@@ -324,7 +262,7 @@ static void pollBootButton(uint32_t now) {
 // we just checkpoint everything more often to shrink the loss window.
 static void pollBattery(uint32_t now) {
   battery::tick(now, screenOn, effectiveBright());
-  if (screenOn && !settingsOpen && !statsOpen && !wifiConfirmOpen && !askOpen)
+  if (screenOn && !settingsOpen && !statsOpen && !askOpen)
     renderBatteryIfChanged(); // home/needs-you top bar owns the glyph cell
   static uint32_t lastLowSave = 0;
   if (battery::percent() <= 3 && now - lastLowSave > 60000) {
@@ -338,7 +276,7 @@ static void pollBattery(uint32_t now) {
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("\n[CYD Buddy] WiFi + official Clawd character");
+  Serial.println("\n[CYD Buddy] BLE + official Clawd character");
 
   display.begin();
   ui::begin(display);
@@ -356,7 +294,7 @@ void setup() {
   display.setBrightness(effectiveBright());
   display.backlight(true);
 
-  net::server.setToken(loadOrCreateToken(storage));
+  net::ble.setToken(loadOrCreateToken(storage));
 
   // restore the last stats snapshot so a replug shows the previous numbers
   // immediately (the next hook event re-asserts the authoritative totals).
@@ -367,29 +305,10 @@ void setup() {
   // once instead of rolling up from zero on the first frame after WiFi connects.
   seedStats();
 
-  TFT_eSPI &t = display.tft();
-  t.fillScreen(TFT_BLACK);
-  t.setTextDatum(MC_DATUM);
-  t.setTextColor(TFT_WHITE, TFT_BLACK);
-  t.drawString("Connecting WiFi...", t.width() / 2, t.height() / 2, 2);
-
-  net::server.begin([](const String &ap) {
-    TFT_eSPI &d = display.tft();
-    d.fillScreen(TFT_BLACK);
-    d.setTextDatum(MC_DATUM);
-    d.setTextColor(TFT_YELLOW, TFT_BLACK);
-    d.drawString("WiFi setup", d.width() / 2, d.height() / 2 - 56, 4);
-    d.setTextColor(TFT_WHITE, TFT_BLACK);
-    d.drawString("Join WiFi hotspot:", d.width() / 2, d.height() / 2 - 14, 2);
-    d.drawString(ap.c_str(), d.width() / 2, d.height() / 2 + 12, 4);
-    d.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    d.drawString("then pick your network", d.width() / 2, d.height() / 2 + 48,
-                 2);
-  });
+  net::ble.begin(); // instant: starts advertising, no provisioning to wait on
 
   haveChar = render::character.begin(display, "/clawd");
-  Serial.printf("wifi=%d ip=%s char=%d\n", net::server.state().wifiUp,
-                net::server.state().ip.c_str(), haveChar);
+  Serial.printf("char=%d\n", haveChar);
 
   display.tft().fillScreen(TFT_BLACK);
   renderStatic(stateName(millis()));
@@ -400,21 +319,11 @@ void setup() {
 
 void loop() {
   uint32_t now = millis();
-  net::server.loop();
-  net::AppState &s = net::server.state();
+  net::ble.loop();
+  net::AppState &s = net::ble.state();
   display.tick(now); // step any backlight glide (pre-sleep fade, auto-dim)
   pollAmbient(now);  // ambient-light night-dim ("Brightness: auto")
   pollBattery(now);  // battery gauge tick + glyph + low-battery guard
-
-  // WiFi OTA: arm once the link first comes up, then service it every loop
-  // (before the screen-off early-returns below, so a dark device still updates).
-  static bool otaUp = false;
-  if (s.wifiUp && !otaUp) {
-    otaUp = true;
-    otaSetup();
-  }
-  if (otaUp)
-    ArduinoOTA.handle();
 
   // Mirror the latest counters to NVS (throttled + only-on-change) so an unplug
   // restores them on the next boot. Runs before any early return below so it
@@ -449,7 +358,7 @@ void loop() {
     lastAskId = s.askId;
     askOpen = true;
     askShownAt = now;
-    settingsOpen = statsOpen = wifiConfirmOpen = false;
+    settingsOpen = statsOpen = false;
     if (!screenOn) {
       screenOn = true;
       setCpuFrequencyMhz(240); // back to full speed on wake
@@ -535,8 +444,7 @@ void loop() {
       if (nudgeWake)
         lastNudgeWake = now; // fire the screen-wake just once per wait episode
       screenOn = true;
-      setCpuFrequencyMhz(240);     // back to full speed on wake
-      net::server.nudgeReconnect(); // if we dozed offline, start reconnecting now
+      setCpuFrequencyMhz(240); // back to full speed on wake
       display.backlight(true);
       lastInteraction = now;
       forceRedraw = true;
@@ -570,14 +478,13 @@ void loop() {
     longFired = false;
     pressX = tx; // remember where the contact began, for swipe/pet detection
     pressY = ty;
-    pressOnHome = !(settingsOpen || statsOpen || wifiConfirmOpen || askOpen);
+    pressOnHome = !(settingsOpen || statsOpen || askOpen);
   }
 
   // ---- a full-screen mode left idle past the timeout closes back to home,
   //      so the backlight still powers down if the user walks away from it ----
-  if ((settingsOpen || statsOpen || wifiConfirmOpen) &&
-      now - lastInteraction > SCREEN_OFF_MS) {
-    settingsOpen = statsOpen = wifiConfirmOpen = false;
+  if ((settingsOpen || statsOpen) && now - lastInteraction > SCREEN_OFF_MS) {
+    settingsOpen = statsOpen = false;
     forceRedraw = true;
   }
 
@@ -633,25 +540,6 @@ void loop() {
       if (now - lastStatsRefresh > 1000) {
         lastStatsRefresh = now;
         renderStats(false); // redraw only the value cells (session timer, heap…)
-      }
-    }
-    wasTouched = t;
-    delay(5);
-    return;
-  }
-
-  // ---- WiFi-setup confirmation (Cancel returns to settings) ----
-  if (wifiConfirmOpen) {
-    if (tap) {
-      lastInteraction = now;
-      if (inRect(denyBtn, tx, ty)) {
-        wifiConfirmOpen = false;
-        settingsOpen = true;
-        renderSettings();
-      } else if (inRect(approveBtn, tx, ty)) {
-        net::server.wifiPortal();
-        delay(200);
-        ESP.restart();
       }
     }
     wasTouched = t;
@@ -747,8 +635,8 @@ void loop() {
     historySaveIfChanged(storage, true);
     display.backlight(false);
     led.off();
-    setCpuFrequencyMhz(80); // still tracking over WiFi, but at the WiFi-safe
-                            // minimum clock -> lower idle draw with screen off
+    setCpuFrequencyMhz(80); // BLE stays connectable, and 80 MHz is the
+                            // radio-safe floor -> lower idle draw, screen off
   } else if (screenOn) {
     // pre-sleep fade: ease the backlight down in the last PRESLEEP_MS so the
     // cut-off isn't an abrupt blackout (also a subtle "about to sleep" cue).
