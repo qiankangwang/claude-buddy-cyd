@@ -1,23 +1,26 @@
 # CYD Buddy — Claude Code hooks setup
 
 The buddy is driven entirely by Claude Code **hooks** (no official Hardware
-Buddy / BLE feature needed). A tiny helper (`buddy_hook.py`) bridges hook events
-to the CYD over the LAN (HTTP + `X-Buddy-Token`). By default it is a **passive
-stats dashboard** — every status hook is non-blocking and never affects a
-session. One **optional** hook (`PermissionRequest`, §2.1) is synchronous and
-lets you **approve a tool call by tapping the device** instead of the terminal;
-it always fails open, so the session is never stuck if the device is off.
+Buddy feature needed). A tiny helper (`buddy_hook.py`) POSTs hook events to a
+local **bridge** (`buddy_bridge.py`, spawned on demand, exits when Claude goes
+quiet) which relays them to the CYD over **Bluetooth LE**. By default it is a
+**passive stats dashboard** — every status hook is non-blocking and never
+affects a session. One **optional** hook (`PermissionRequest`, §2.1) is
+synchronous and lets you **approve a tool call by tapping the device** instead
+of the terminal; it always fails open, so the session is never stuck if the
+device is off.
 
-## 1. Config (device address + secret; NOT committed)
+## 1. Config (device secret; NOT committed)
 
 `~/.claude/buddy.json`:
 ```json
-{ "ip": "claude-cyd.local", "token": "<the token shown on the device>" }
+{ "token": "<the token shown on the device>" }
 ```
-`ip` takes either the device's mDNS hostname — **`claude-cyd.local`**, which
-keeps working when DHCP hands out a new address (Windows 10+/macOS resolve
-`.local` natively) — or a literal IP if your network blocks mDNS. The CYD shows
-its current `IP` and `token` (long-press → **Settings → Stats**).
+The CYD shows its `token` under long-press → **Settings → Stats**. Optional
+keys: `"port"` (move the bridge off `127.0.0.1:8787`), `"budget"` (daily token
+gauge), `"host"` (advanced: point the hook at a bridge on **another** machine,
+e.g. `"192.0.2.10:8787"` — see §4). One PC-side dependency:
+`python -m pip install bleak`.
 
 ## 2. Hooks (`~/.claude/settings.json`)
 
@@ -76,28 +79,26 @@ empty; everything else still works.
 
 ## 4. Use it from another computer (no repo needed)
 
-The flashed device is **fully standalone** — firmware and the animation pack live
-in its own flash, so it needs no PC, no repo, and no cloud; it just boots, joins
-your WiFi, and waits for events. To drive it from a machine that **doesn't have
-this repository**, the only thing that machine needs is the **single** helper
-file: `buddy_hook.py` depends on nothing but the Python 3 standard library and
-reads only `~/.claude/buddy.json` and `~/.claude/buddy_tokens.json` (never the
-repo). So it's just:
+The flashed device is **fully standalone** — firmware and the animation pack
+live in its own flash, so it needs no PC, no repo, and no cloud; it just boots
+and advertises over BLE. Two ways to drive it from elsewhere:
 
-1. **Copy one file** — put `buddy_hook.py` on that machine; a good
-   repo-independent home is `~/.claude/buddy_hook.py`.
-2. **Config** — create `~/.claude/buddy.json` with the device `ip` + `token`
-   (shown on the device under Settings → Stats).
-3. **Hooks** — add the block from §2 to that machine's `~/.claude/settings.json`,
-   with the command pointing where you put the file, e.g.
-   `python "~/.claude/buddy_hook.py"` (use an absolute path; on Windows
-   `%USERPROFILE%\.claude\buddy_hook.py`).
+**A. Another machine with its own Bluetooth** (you carried the buddy over):
+repeat the normal setup there — copy **two** files, `buddy_hook.py` and
+`buddy_bridge.py` (repo-independent home: `~/.claude/`; keep them side by side
+— the hook spawns the bridge from its own directory), `pip install bleak`,
+create `buddy.json` with the `token`, add the hooks from §2 pointing at that
+copy (absolute path; on Windows `%USERPROFILE%\.claude\buddy_hook.py`).
 
-Requirements: **Python 3 on `PATH`**, and the machine must be able to **reach the
-device** — same WiFi is simplest; off-network works via a mesh VPN (e.g. Tailscale
-with a subnet router advertising the device's LAN subnet), with `buddy.json`
-pointed at whatever address that machine can reach. `buddy_tokens.json` is created
-automatically on first run.
+**B. A machine without Bluetooth reach** (remote box, VM): on the PC that sits
+near the buddy, run the bridge listening beyond localhost —
+`python buddy_bridge.py --listen 0.0.0.0` — and on the remote machine put
+`"host": "<that-pc>:8787"` into `buddy.json` (reachable over LAN or a mesh VPN
+such as Tailscale). The remote machine only needs `buddy_hook.py`; with `host`
+set it never tries to spawn a local bridge.
+
+Requirements: **Python 3 on `PATH`** (plus `bleak` wherever a bridge runs).
+`buddy_tokens.json` is created automatically on first run.
 
 Each machine keeps its **own** `buddy_tokens.json`, so today/all-time counts are
 per-machine, not merged. If two machines push at once, the device shows whichever
@@ -105,12 +106,13 @@ pushed last.
 
 ## 5. Behaviour / safety
 
-- Device unreachable or slow → the status hook swallows the error and returns
-  immediately; it never blocks or breaks a session.
-- The optional approval hook (§2.1) **fails open**: an unreachable device or a
+- Bridge missing → the hook spawns it and drops that one event (the next event
+  heals the display). Device off or out of range → the bridge accepts events
+  and quietly discards them. Either way nothing blocks or breaks a session.
+- The optional approval hook (§2.1) **fails open**: a disconnected device or a
   no-tap timeout yields no decision, so Claude shows its normal prompt. It can
   only *grant* permission you'd otherwise be asked for — it never auto-runs a
   tool Claude wasn't already about to ask about.
-- The helper bypasses the system HTTP proxy (the buddy is on the LAN).
+- The helper bypasses the system HTTP proxy (the bridge is on localhost).
 - The token is a shared secret; treat `buddy.json` as private (it is not part of
   this repo).

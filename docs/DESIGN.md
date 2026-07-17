@@ -2,18 +2,20 @@
 
 A desk companion for Claude Code on the ESP32-2432S028R "Cheap Yellow Display"
 (CYD): the Clawd mascot plus a live usage dashboard, driven by Claude Code hooks
-over WiFi. This document describes the design as shipped.
+over Bluetooth LE. This document describes the design as shipped.
 
 ## 1. Overview
 
 Claude Code emits hook events on the PC. A small Python helper (`buddy_hook.py`),
 registered as a hook, reads the session transcript, computes a usage rollup, and
-POSTs a snapshot to the device over the LAN. The device renders the Clawd
-character for the current activity and a stats card. All stats events are
-non-blocking and never affect Claude's own permission flow. One **optional,
-opt-in** exception: registering the `PermissionRequest` hook adds on-device
-tap-to-approve for a pending tool call (`POST /ask` + polled `GET /decision`);
-it fails open to Claude's normal prompt on timeout or an unreachable device.
+POSTs a snapshot to a local on-demand bridge (`buddy_bridge.py`), which relays
+it to the device over BLE. The device renders the Clawd character for the
+current activity and a stats card. All stats events are non-blocking and never
+affect Claude's own permission flow. One **optional, opt-in** exception:
+registering the `PermissionRequest` hook adds on-device tap-to-approve for a
+pending tool call (an `ask` envelope + a decision notify relayed by the
+bridge); it fails open to Claude's normal prompt on timeout or a disconnected
+device.
 
 ## 2. Hardware
 
@@ -43,18 +45,32 @@ it fails open to Claude's normal prompt on timeout or an unreachable device.
 
 ## 3. Transport & protocol
 
-- Device runs `WiFiManager` (captive-portal provisioning) + a `WebServer`:
-  - `POST /event` — JSON snapshot; requires header `X-Buddy-Token`.
-  - `POST /ask` — show the opt-in Allow/Deny prompt for a pending tool call.
-  - `GET /decision` — the tap for the current ask (`allow`/`deny`/`""`).
-  - `GET /` — health.
-- `POST /event` body fields (all optional; last value sticks):
+Two hops. Hop 1 (PC-internal): the hook POSTs the device's classic HTTP surface
+to the bridge on `127.0.0.1:8787` — `POST /event`, `POST /ask`,
+`GET /decision`, `GET /` (health), with the `X-Buddy-Token` header. Hop 2
+(radio): the bridge wraps each body in a JSON envelope
+`{"k":"event"|"ask","tok":"<token>","d":{…}}` and writes it to a GATT
+characteristic (NimBLE server on the device, name `claude-cyd`, MTU 517):
+
+- service `177b0001-6f32-4ea3-b878-866e7628de1f`
+- `ingress` `177b0002-…` — write (events are latest-wins coalesced by the
+  bridge; a dropped snapshot is healed by the next one)
+- `decision` `177b0003-…` — notify + read: `{"askId":N,"decision":"allow"|"deny"}`
+
+Bridge lifecycle: no autostart — the hook spawns it on connection-refused; the
+listening port doubles as the single-instance lock; it scans in a budgeted
+burst, holds one connection while events flow, goes radio-quiet (short rescan
+every 5 min) when the device is away, and exits after 10 min without events.
+
+- `event` body fields (all optional; last value sticks):
   `total`, `running` (session/activity flags), `msg` (activity text),
   `project`, `tokens` (today), `tokensAll`, `tools`, `turns`, `sessions`,
   `date` (PC-local `YYYY-MM-DD`; keys the on-device 30-day usage history — the
   device has no clock of its own).
-- Auth is a shared token generated on the device (NVS) and shown on screen; the
-  helper bypasses any system HTTP proxy since the device is on the LAN.
+- Auth is a shared token generated on the device (NVS) and shown on screen,
+  carried in every envelope (`tok`); no BLE bonding — a ~10 m radio radius plus
+  the token is proportionate for a desk gadget. The helper bypasses any system
+  HTTP proxy since the bridge is on localhost.
 
 ## 4. PC helper (`tools/buddy_hook.py`)
 
@@ -68,9 +84,10 @@ Invoked by Claude Code hooks (see `tools/HOOKS.md`). For each event it:
 - aggregates today's totals across sessions (persisted in
   `~/.claude/buddy_tokens.json`, reset at local midnight) plus an all-time token
   counter, and
-- POSTs a `(running, total, activity)` snapshot with that rollup.
+- POSTs a `(running, total, activity)` snapshot with that rollup to the bridge
+  (spawning the bridge first if it isn't running).
 
-All events are non-blocking; device/network errors are swallowed (fail-open).
+All events are non-blocking; bridge/device errors are swallowed (fail-open).
 
 ## 5. UI & states
 
@@ -94,9 +111,9 @@ All events are non-blocking; device/network errors are swallowed (fail-open).
   sleeps.
 - **Settings** (long-press): Stats panel (full detail), Quiet, Brightness
   (100 / 70 / 40 / auto — auto follows the light sensor, capping the backlight
-  at a night level while the room is dark), touch Recalibrate, and a
-  non-destructive WiFi reconfigure. Triple-tap anywhere = `dizzy` easter egg;
-  a single tap on the character = a brief `heart` (petting).
+  at a night level while the room is dark), and touch Recalibrate. Triple-tap
+  anywhere = `dizzy` easter egg; a single tap on the character = a brief
+  `heart` (petting).
 - **BOOT key:** short press wakes the screen / acknowledges the nudge; holding
   it toggles Quiet (one-blink LED cue).
 - Entering a new state pops the character in (80% → 100% over ~180 ms); clip
@@ -112,8 +129,9 @@ All events are non-blocking; device/network errors are swallowed (fail-open).
   (tap to wake). On battery it runs until the cell's protection cuts power
   (the brownout calibrates the gauge), checkpointing NVS every minute at ≤3%.
 
-State selection: `dizzy` (recent triple-tap) → `sleep` (no WiFi/session) →
-`busy` (`running>0`) → `idle`/ready (`total>0`) → `sleep`.
+State selection: `dizzy` (recent triple-tap) → `sleep` (no bridge connected —
+i.e. Claude isn't in use) → `busy` (`running>0`) → `idle`/ready (`total>0`) →
+`sleep`.
 
 ## 6. Firmware architecture
 
@@ -121,7 +139,7 @@ State selection: `dizzy` (recent triple-tap) → `sleep` (no WiFi/session) →
 src/
   main.cpp              orchestrator: state machine + transients, touch gesture
                         pipeline (tap/swipe/long-press), mode dispatch,
-                        sleep/wake power loop, WiFi OTA service
+                        sleep/wake power loop
   app/
     ctx.{h,cpp}         small shared runtime state (session start, intensity,
                         Quiet, brightness)
@@ -149,7 +167,6 @@ src/
                         palette snapshots of both pages, ~250 ms ease-out)
     stats_panel.{h,cpp} full live Stats panel
     settings.{h,cpp}    settings menu
-    wifi_confirm.{h,cpp} WiFi-portal confirmation
     ask.{h,cpp}         opt-in "Allow this tool?" prompt
   hal/
     display.{h,cpp}     TFT_eSPI (ILI9341, HSPI) wrapper + backlight
@@ -157,13 +174,15 @@ src/
     led.{h,cpp}         RGB status LED (active-LOW)
     storage.{h,cpp}     NVS (Preferences) wrapper: token, touch calibration
   net/
-    server.{h,cpp}      WiFiManager + WebServer + AppState
+    ble.{h,cpp}         NimBLE GATT server + AppState
   render/
     character.{h,cpp}   Clawd GIF pack decode (AnimatedGIF -> off-screen sprite)
 ```
 
-Single-threaded: HTTP is serviced inside `loop()` via `handleClient()`, so the
-renderer and request handlers never race and no locking is needed.
+AppState stays single-threaded: NimBLE callbacks run on the NimBLE host task
+but only enqueue raw payload copies (FreeRTOS queue); `Ble::loop()` parses and
+applies them on the Arduino loop task, so the renderer and the transport never
+race and no locking is needed.
 
 ## 7. Memory & flash (no PSRAM)
 
@@ -175,12 +194,11 @@ renderer and request handlers never race and no locking is needed.
   (240×140 ≈ 16.8 KB each; 16bpp would blow the largest free block), frees
   them at the end of the gesture, and degrades to an instant page switch /
   skipped bounce when either allocation fails.
-- Partition table (`partitions.csv`, 4 MB, dual-OTA): `nvs` (kept at its
-  pre-OTA offset so credentials/token/calibration survive the migration),
-  `otadata`, `app0`/`app1` (ota_0/ota_1, ~1.31 MB each), `littlefs` (~1.31 MB,
-  holds the ~1.2 MB GIF pack). The LittleFS partition is labelled `littlefs`
-  and mounted explicitly. Firmware and filesystem also flash over WiFi via
-  `ArduinoOTA` (env `cyd-ota`; password = the device token).
+- Partition table (`partitions.csv`, 4 MB, factory-only): `nvs` and `littlefs`
+  are pinned at their historical offsets (token/calibration/stats and the
+  ~1.2 MB GIF pack survive layout changes); `app0` is a single 2.625 MB factory
+  slot — the BLE build uses ~30% of it. The dual-OTA slots and `ArduinoOTA`
+  were removed with WiFi; firmware updates are USB-only, by design.
 
 ## 8. Build & GIF assets
 
@@ -198,6 +216,12 @@ renderer and request handlers never race and no locking is needed.
   project pivoted to a self-hosted WiFi + Claude Code hooks transport with the
   same device/UX goals. The unused BLE implementation lived under `src/ble/`
   until mid-2026 (recoverable from git history).
+- **WiFi → BLE (2026-07).** WiFi's operational costs — per-venue captive-portal
+  provisioning, IP/DHCP fragility, ~143 mA idle draw, and a heavyweight
+  device stack — outweighed its one perk (wireless OTA). The transport moved to
+  a self-hosted BLE GATT service plus an on-demand PC bridge with no autostart;
+  OTA was traded away for USB-only flashing. See
+  `docs/superpowers/specs/2026-07-16-ble-migration-design.md`.
 - **Approval → passive dashboard → opt-in approval.** An earlier iteration
   showed permission prompts with on-device Approve/Deny. That was removed in
   favour of a passive usage dashboard, then a leaner version returned as an

@@ -31,9 +31,12 @@ Battery-side mA at 3.7 V nominal, boost efficiency folded in
 
 | State                     | Est. draw |
 |---------------------------|-----------|
-| Screen on (backlight b %) | 143 + 95 × b/100 mA |
-| Screen off, loop running  | 143 mA    |
+| Screen on (backlight b %) | 90 + 95 × b/100 mA |
+| Screen off, loop running  | 90 mA     |
 | Deep sleep (powered off)  | 10 mA     |
+
+(The base was 143 mA on the WiFi build — measured; 90 mA is the BLE build's
+first guess, and the death-anchored calibration absorbs the difference.)
 
 - `CAPACITY_MAH 2000`, `USABLE_FRACTION 0.85` → 1700 mAh usable.
   Full-brightness runtime ≈ 7 h, which matches the class of hardware.

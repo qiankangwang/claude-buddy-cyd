@@ -10,7 +10,10 @@ namespace battery {
 // USB power meter if the estimate drifts; within +-20% is the bar.
 static const float CAPACITY_MAH = 2000.0f;
 static const float USABLE_FRACTION = 0.85f; // don't count the cell's last gasp
-static const float MA_BASE = 143.0f;        // board + ESP32 + WiFi, screen dark
+static const float MA_BASE = 90.0f;  // board + ESP32 + BLE, screen dark. First
+                                     // guess (the WiFi build measured ~143);
+                                     // the death-anchored capacity calibration
+                                     // absorbs the error over cycles.
 static const float MA_BL_FULL = 95.0f;      // backlight's own draw at 100%
 static const float MA_SLEEP = 10.0f;        // deep sleep incl. boost idle draw
 static const float USABLE_MAH = CAPACITY_MAH * USABLE_FRACTION;
