@@ -98,3 +98,133 @@ class Link:
 
     def touch(self):
         self.last_request = time.monotonic()
+
+
+# ---- HTTP surface (mirrors the device's old WiFi endpoints) -----------------
+import argparse
+import asyncio
+import os
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+CFG = os.path.join(os.path.expanduser("~"), ".claude", "buddy.json")
+
+
+def _cfg_port():
+    try:
+        with open(CFG, "r", encoding="utf-8") as f:
+            return int(json.load(f).get("port", 8787) or 8787)
+    except Exception:
+        return 8787
+
+
+class Handler(BaseHTTPRequestHandler):
+    link = None  # class attr, set in main()
+
+    def log_message(self, *a):  # stay silent (spawned headless by the hook)
+        pass
+
+    def _body(self):
+        n = int(self.headers.get("Content-Length", 0) or 0)
+        return self.rfile.read(n) if n else b""
+
+    def _send(self, code, obj):
+        raw = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        self.link.touch()
+        if self.path == "/decision":
+            self._send(200, {"decision": self.link.decisions.get()})
+        else:
+            self._send(200, {"ok": True, "connected": self.link.connected})
+
+    def do_POST(self):
+        self.link.touch()
+        tok = self.headers.get("X-Buddy-Token", "")
+        try:
+            body = json.loads(self._body().decode("utf-8"))
+        except Exception:
+            self._send(400, {"ok": False, "error": "bad json"})
+            return
+        if self.path == "/event":
+            # Always accepted: the BLE side delivers the newest snapshot when
+            # it can; a dropped event is healed by the next one.
+            self.link.slot.put(make_envelope("event", tok, body))
+            self._send(202, {"ok": True})
+        elif self.path == "/ask":
+            # Synchronous-ish: the hook is blocking on this, so confirm the
+            # GATT write actually landed (or fail fast so the hook fails open).
+            self.link.decisions.clear()
+            if not (self.link.connected and self.link.loop):
+                self._send(502, {"ok": False, "error": "device not connected"})
+                return
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self.link.worker.send_ask(make_envelope("ask", tok, body)),
+                    self.link.loop)
+                fut.result(timeout=4)
+                self._send(200, {"ok": True})
+            except Exception:
+                self._send(502, {"ok": False, "error": "ble write failed"})
+        else:
+            self._send(404, {"ok": False})
+
+
+class BleWorker:
+    """BLE side — implemented in Task 3. The stub keeps --no-ble runs and the
+    unit tests importable before bleak enters the picture."""
+
+    def __init__(self, link):
+        self.link = link
+
+    async def run(self):
+        return
+
+    async def send_ask(self, envelope):
+        raise RuntimeError("BLE not implemented yet")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="CYD buddy BLE bridge")
+    ap.add_argument("--port", type=int, default=None)
+    ap.add_argument("--listen", default="127.0.0.1",
+                    help="bind address; 0.0.0.0 lets other machines drive the "
+                         "buddy through this bridge")
+    ap.add_argument("--idle-exit", type=float, default=IDLE_EXIT_S)
+    ap.add_argument("--no-ble", action="store_true",
+                    help="HTTP surface only (tests)")
+    args = ap.parse_args(argv)
+
+    link = Link()
+    # The bind IS the single-instance lock: with SO_REUSEADDR off, a second
+    # bridge's bind fails and it exits silently (the hook spawns eagerly).
+    ThreadingHTTPServer.allow_reuse_address = False
+    try:
+        httpd = ThreadingHTTPServer((args.listen, args.port or _cfg_port()),
+                                    Handler)
+    except OSError:
+        return 0  # another bridge is already serving
+    Handler.link = link
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    if not args.no_ble:
+        worker = BleWorker(link)
+        link.worker = worker
+        threading.Thread(target=lambda: asyncio.run(worker.run()),
+                         daemon=True).start()
+
+    # Sole exit condition: Claude has gone quiet. (Device-absent costs ~zero
+    # while events still flow — the worker sits dormant, radio silent.)
+    while time.monotonic() - link.last_request < args.idle_exit:
+        time.sleep(5)
+    httpd.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
