@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
-"""Claude Code hook -> CYD buddy bridge.
+"""Claude Code hook -> CYD buddy.
 
 Reads the hook event JSON on stdin and pushes a status + usage snapshot to the
-CYD over the LAN (HTTP). The device is a passive stats dashboard (the orange
-Clawd mascot reacts to what Claude is doing); there is no on-device approval, so
-every event is non-blocking and never affects Claude's own permission flow.
+local BLE bridge (buddy_bridge.py, spawned on demand), which relays it to the
+CYD over Bluetooth LE. The device is a passive stats dashboard (the orange
+Clawd mascot reacts to what Claude is doing); status events are non-blocking
+and never affect Claude's own permission flow.
 
 Per event it sends: current activity, project name, and today's usage rollup
 (tokens, all-time tokens, tool calls, assistant turns, session count).
 
-Config: ~/.claude/buddy.json  ->  {"ip": "192.168.x.x", "token": "...."}
-Fail-open: any device/network error is swallowed (never blocks the session).
+Config: ~/.claude/buddy.json  ->  {"token": "....", "port": 8787 (optional)}
+Fail-open: any bridge/device error is swallowed (never blocks the session).
 """
 import json
 import os
+import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 CFG = os.path.join(os.path.expanduser("~"), ".claude", "buddy.json")
@@ -27,9 +30,35 @@ _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def _cfg():
+    """Bridge endpoint + device token + whether the bridge is ours to spawn.
+    The device no longer has an IP — the on-demand local bridge relays
+    everything over BLE. An explicit "host" instead points at a bridge running
+    on another machine (tools/HOOKS.md §4); we never try to spawn that one."""
     with open(CFG, "r", encoding="utf-8") as f:
         c = json.load(f)
-    return c["ip"], c["token"]
+    host = c.get("host") or "127.0.0.1:%d" % int(c.get("port", 8787) or 8787)
+    return host, c["token"], not c.get("host")
+
+
+def _spawn_bridge():
+    """Fire-and-forget: start the bridge headless. The current event is
+    dropped (snapshot semantics — the next one heals the display); the
+    bridge's port-bind makes concurrent spawns collapse to one instance."""
+    bridge = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "buddy_bridge.py")
+    kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+          "stderr": subprocess.DEVNULL, "close_fds": True}
+    if sys.platform == "win32":
+        # DETACHED_PROCESS | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        kw["creationflags"] = 0x00000008 | 0x08000000 | 0x00000200
+    try:
+        subprocess.Popen([sys.executable, bridge], **kw)
+    except Exception:
+        pass
+
+
+def _refused(exc):
+    return isinstance(getattr(exc, "reason", None), ConnectionRefusedError)
 
 
 def _budget():
@@ -68,34 +97,47 @@ def _intensity(evt, tool):
     return len(calls), len(tasks)
 
 
-def _post_event(ip, tok, payload):
+def _post_event(host, tok, payload, spawn):
     req = urllib.request.Request(
-        "http://%s/event" % ip,
+        "http://%s/event" % host,
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json", "X-Buddy-Token": tok},
         method="POST",
     )
-    _opener.open(req, timeout=5).read()
-
-
-def _ask_decision(ip, tok, tool, timeout=26):
-    """Show an Allow/Deny prompt on the device for a pending tool call, then poll
-    for the tap. Returns "allow"/"deny", or "" on timeout/unreachable so the
-    caller FAILS OPEN to Claude's normal permission prompt."""
     try:
-        req = urllib.request.Request(
-            "http://%s/ask" % ip,
-            data=json.dumps({"tool": tool}).encode("utf-8"),
-            headers={"Content-Type": "application/json", "X-Buddy-Token": tok},
-            method="POST",
-        )
-        _opener.open(req, timeout=4).read()
-    except Exception:
-        return ""  # device unreachable -> normal prompt
+        _opener.open(req, timeout=5).read()
+    except urllib.error.URLError as e:
+        if spawn and _refused(e):
+            _spawn_bridge()  # bridge wasn't running; this event is dropped
+        raise
+
+
+def _ask_decision(host, tok, tool, spawn, timeout=26):
+    """Show an Allow/Deny prompt on the device, then poll the bridge for the
+    tap. Returns "allow"/"deny", or "" on timeout/unreachable so the caller
+    FAILS OPEN to Claude's normal permission prompt."""
+    req = urllib.request.Request(
+        "http://%s/ask" % host,
+        data=json.dumps({"tool": tool}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "X-Buddy-Token": tok},
+        method="POST",
+    )
+    for attempt in (0, 1):
+        try:
+            _opener.open(req, timeout=4).read()
+            break
+        except urllib.error.URLError as e:
+            if attempt == 0 and spawn and _refused(e):
+                _spawn_bridge()
+                time.sleep(1.5)  # bridge boots fast; BLE connect races the poll
+                continue
+            return ""  # no bridge / device not connected -> normal prompt
+        except Exception:
+            return ""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            req = urllib.request.Request("http://%s/decision" % ip,
+            req = urllib.request.Request("http://%s/decision" % host,
                                          headers={"X-Buddy-Token": tok})
             r = json.loads(_opener.open(req, timeout=3).read().decode("utf-8"))
             if r.get("decision") in ("allow", "deny"):
@@ -301,7 +343,7 @@ def main():
     ev_ts = int(time.time() * 1000)
     evt = data.get("hook_event_name", "")
     try:
-        ip, tok = _cfg()
+        host, tok, spawn = _cfg()
     except Exception:
         return 0  # not configured -> do nothing
 
@@ -309,7 +351,7 @@ def main():
     # a permission decision; fail OPEN (no output -> normal prompt) on timeout or
     # an unreachable device. Skips the stats/animation path below.
     if evt == "PermissionRequest":
-        d = _ask_decision(ip, tok, data.get("tool_name", "this tool"))
+        d = _ask_decision(host, tok, data.get("tool_name", "this tool"), spawn)
         if d:
             # PermissionRequest contract: decision.behavior is "allow"|"block".
             print(json.dumps({"hookSpecificOutput": {
@@ -381,7 +423,7 @@ def main():
             payload["act"] = act
         if fx:
             payload["fx"] = fx
-        _post_event(ip, tok, payload)
+        _post_event(host, tok, payload, spawn)
     except Exception:
         pass
     return 0
