@@ -176,17 +176,80 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class BleWorker:
-    """BLE side — implemented in Task 3. The stub keeps --no-ble runs and the
-    unit tests importable before bleak enters the picture."""
+    """Owns the BLE side on its own asyncio loop.
+
+    States: SCANNING (budgeted burst after start/disconnect) -> CONNECTED
+    (no scanning; connection upkeep is far cheaper than scanning) -> DORMANT
+    (scan gave up: radio quiet, short rescan every DORMANT_GAP_S while events
+    keep arriving). bleak is imported lazily so --no-ble runs and the unit
+    tests never need it."""
 
     def __init__(self, link):
         self.link = link
-
-    async def run(self):
-        return
+        self._client = None
 
     async def send_ask(self, envelope):
-        raise RuntimeError("BLE not implemented yet")
+        c = self._client
+        if not (c and c.is_connected):
+            raise RuntimeError("not connected")
+        await c.write_gatt_char(INGRESS_UUID, envelope, response=True)
+
+    async def _pump(self, client, disconnected):
+        """Forward the newest snapshot whenever one is waiting."""
+        ev = self.link.slot.event
+        while not disconnected.is_set():
+            env = self.link.slot.take()
+            if env is not None:
+                await client.write_gatt_char(INGRESS_UUID, env, response=True)
+                continue
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
+            ev.clear()
+
+    async def run(self):
+        from bleak import BleakClient, BleakScanner
+        link = self.link
+        link.loop = asyncio.get_running_loop()
+        link.slot.attach(link.loop)
+        scan_until = time.monotonic() + SCAN_WINDOW_S
+        last_scan = 0.0
+        while True:
+            dormant = time.monotonic() > scan_until
+            if dormant and time.monotonic() - last_scan < DORMANT_GAP_S:
+                await asyncio.sleep(15)
+                continue
+            last_scan = time.monotonic()
+            try:
+                dev = await BleakScanner.find_device_by_name(
+                    DEVICE_NAME, timeout=DORMANT_SCAN_S if dormant else 15.0)
+            except Exception:
+                await asyncio.sleep(5)  # BT stack hiccup (sleep/resume) — retry
+                continue
+            if dev is None:
+                continue
+            disconnected = asyncio.Event()
+
+            def _on_dc(_c):
+                link.loop.call_soon_threadsafe(disconnected.set)
+
+            try:
+                async with BleakClient(dev,
+                                       disconnected_callback=_on_dc) as client:
+                    self._client = client
+                    await client.start_notify(
+                        DECISION_UUID,
+                        lambda _h, data: link.decisions.set_from_notify(data))
+                    link.connected = True
+                    await self._pump(client, disconnected)
+            except Exception:
+                await asyncio.sleep(2)
+            finally:
+                self._client = None
+                link.connected = False
+                # fresh scanning budget after losing the device
+                scan_until = time.monotonic() + SCAN_WINDOW_S
 
 
 def main(argv=None):
