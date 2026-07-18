@@ -12,7 +12,8 @@ String loadOrCreateToken(hal::Storage &storage) {
   }
   char out[17];
   for (int i = 0; i < 8; i++)
-    sprintf(out + i * 2, "%02x", (unsigned)(esp_random() & 0xFF));
+    snprintf(out + i * 2, sizeof(out) - i * 2, "%02x",
+             (unsigned)(esp_random() & 0xFF));
   out[16] = 0;
   storage.putBytes("token", out, 16);
   return String(out);
